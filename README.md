@@ -1,6 +1,6 @@
 # Spider-Man for Horizon
 
-![Web swinging over a city map, landing on a tower, running up its face, vaulting the roof edge and webbing off again](assets/swing.gif)
+![Web swinging over a city map, landing on a tower, running up its face, vaulting the roof edge and webbing off again](docs/swing.gif)
 
 <sub>Recorded on the WebAssembly build. The native build plays the same, without the camera roll on walls (see Status).</sub>
 
