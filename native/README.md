@@ -19,23 +19,55 @@ unchanged; this folder holds the game-side hooks and the tooling around them.
 |---|---|---|
 | HEAD | `game::remote::Game::tick_remote` | each tick: rays, keys, the player to the mod; velocity, fall reset, pose, camera, shake, wind, chat lines back |
 | HEAD + RETURN | `game::remote::Game::remote_send_state` | while the mod forgets the fall, your own world's server hears you as on the ground (never another server) |
-| cancellable HEAD | `game::chat::Game::handle_chat_input`, `game::remote::Game::send_chat` | `/swingmode …` goes to the mod |
+| cancellable HEAD | `game::chat::Game::handle_chat_input`, `game::remote::Game::send_chat` | `/swingmode …` goes to the mod (own world only) |
 | HEAD | `game::leads::Game::leash_geometry` | the web strands |
 | cancellable HEAD | `game::perspective::Game::player_model_geometry` | the posed player model (third person) |
 | cancellable HEAD | `game::perspective::Game::camera_view` | chase and fixed camera, shake |
 | cancellable HEAD (dev only) | `camera::view_matrix` | the wall-as-floor roll |
 
-The mod acts only in your own world (single player, or a LAN world you host).
+The mod acts only in your own world (single player, or a LAN world you host): Horizon's own server thread is
+running and the game is connected to it. Numbers from the mod that are not finite are dropped, ray offsets are
+bounded, and a panic in the mod skips its tick (it starts over) instead of crashing the game.
 
 ## Differences from the WebAssembly version
 
 - No wall-as-floor roll in the shipped bundle: the turned view needs state shared between Horizon's game and
   its library crate, which a native bundle can't add. The dev build has it.
 - While posed, the player model is drawn without armour, the held item or elytra.
-- Keys are fixed (R web, Z zip), no Controls rows; no settings page; the mode help shows in chat, not a HUD
-  panel. The settings file is `mod-storage/spider-man/` in the game's folder.
+- Keys are fixed (R web, Z zip), no Controls rows; no settings page yet (`/swingmode delay|jump` set the same
+  things); the help shows in chat, not a HUD panel. The settings file is `mod-storage/spider-man/` in the game's
+  folder.
 
-## Build the shipped mod
+## Install with the Horizon launcher
+
+Native mods are experimental in Horizon and off by default. They are not sandboxed: the mod's code runs with your
+rights, so read `mixins/spider-man/` before building it. Tested on macOS with launcher 0.2.22.
+
+1. Update the launcher (native builds need 0.2.21 or later): `horizon-launcher update`, then restart it.
+2. Prepare the game's resources from your own Minecraft 26.3, if the launcher hasn't yet:
+   `horizon-launcher prepare`.
+3. Get this repository and build the mod into a game of its own:
+
+   ```sh
+   git clone https://github.com/wyddy7/minecraft-spider-man-rust
+   horizon-launcher native-build minecraft-spider-man-rust/native/mixins/spider-man --trust-native-code
+   ```
+
+   The first build downloads the launcher's Rust and Horizon v0.2.96's source and takes a few minutes; it
+   installs as a `native-…` version in its own "Native mods" instance, away from your other worlds.
+4. In the launcher pick the "Native mods" instance and press Play (a Microsoft account that owns Minecraft:
+   Java Edition). Press F5 for third person, hold R.
+
+If step 3 stops at `failed to start cargo metadata`, the launcher started horizon-mixins without its own Rust
+on the PATH. Until that is fixed in the launcher, add it for the build (macOS path shown; the version is the one
+the launcher downloaded):
+
+```sh
+PATH="$HOME/Library/Application Support/horizon-launcher/rust/1.99.1-aarch64-apple-darwin/bin:$PATH" \
+  horizon-launcher native-build minecraft-spider-man-rust/native/mixins/spider-man --trust-native-code
+```
+
+## Build the shipped mod from source
 
 Beside this repository: a Horizon clone containing the pinned commit and
 [horizon-mixins](https://github.com/horizon-rust/horizon-mixins) at the revision in `compatibility.json`.

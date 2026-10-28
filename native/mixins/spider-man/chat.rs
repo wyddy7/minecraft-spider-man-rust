@@ -1,4 +1,4 @@
 // The plug's chat commands, before the server sees them.
 fn plug_command(game: &mut crate::game::Game<'_>, message: &str) -> std::ops::ControlFlow<()> {
-    crate::game::spider_man::chat_input(game, message)
+    crate::game::spider_man::chat_input(game, message, true)
 }

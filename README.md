@@ -17,7 +17,8 @@ The mod needs Horizon's experimental `motion` capability, which is proposed upst
 is, build Horizon from the fork [`wyddy7/horizon`](https://github.com/wyddy7/horizon), branch `motion-api`.
 
 **Native mod (in progress, 0.2.0).** Horizon is moving to native mods (horizon-mixins). The same mod also builds
-as a native bundle on an unmodified Horizon v0.2.96 — no fork needed: see [native/](native/README.md).
+as a native bundle on an unmodified Horizon v0.2.96 — no fork needed. Installing it with the Horizon launcher:
+[native/README.md](native/README.md#install-with-the-horizon-launcher).
 
 ## Controls
 
@@ -37,8 +38,8 @@ walls it turns so the wall becomes the floor.
 Settings: Options › Mods › Spider-Man › Settings — the web delay (how long a web flies before it bites; 0.5 by
 default) and jumping into a swing from the ground. They are kept between games.
 
-Chat commands (`/swingmode ...`): `web` (default) · `odm` (an Attack on Titan style gear mode) · `off` ·
-`delay 0..2` · `jump on|off` · `view side|front|back|off` · `debug`.
+Chat commands (`/swingmode ...`): `on` (default) · `off` · `delay 0..2` · `jump on|off` (the settings page's) ·
+`view side|front|back|off` (a fixed camera for looking at poses) · `debug`.
 
 ## Build
 
