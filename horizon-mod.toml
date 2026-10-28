@@ -1,0 +1,9 @@
+id = "swing"
+name = "Spider-Man"
+version = "0.1.0"
+description = "Web swinging (R), zips (Z), wall running and parkour. /swingmode web | odm | off."
+authors = ["wyddy7"]
+api = "0.1"
+side = "client"
+capabilities = ["game-read", "hud", "chat", "input", "render", "motion", "ui", "storage"]
+experimental = ["input", "render", "motion", "ui"]

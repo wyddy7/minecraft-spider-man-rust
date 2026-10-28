@@ -1,0 +1,20 @@
+[package]
+name = "spider-man-swing"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Spider-Man web swinging, wall running and parkour for Horizon"
+license = "MIT"
+repository = "https://github.com/wyddy7/minecraft-spider-man-rust"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+horizon-mod-sdk = { path = "../horizon/crates/horizon-mod-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+
+[workspace]

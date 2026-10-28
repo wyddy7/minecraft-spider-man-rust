@@ -1,0 +1,8 @@
+target/
+.DS_Store
+# Reference footage: study only, never redistributed.
+ref/
+# Local only: the decisions log, reference notes and the recording sign.
+docs/DECISIONS.md
+docs/video-spec.md
+tools/rec_sign.py
