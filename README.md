@@ -24,8 +24,8 @@ horizon-launcher native-build minecraft-spider-man-rust/native/mixins/spider-man
 ```
 
 The first build downloads the launcher's own Rust (about 450 MB, once) and Horizon's source, then compiles
-the game: on an Apple M5 it took under 5 minutes, about 3 GB of disk in all. It becomes the **Native mods** instance in the launcher: pick it, press Play, press **F5** for third
-person, find something tall, hold **R**.
+the game: on an Apple M5 it took under 5 minutes, about 3 GB of disk in all. It becomes the **Native mods**
+instance in the launcher: pick it, press Play, press **F5** for third person, find something tall, hold **R**.
 
 Native mods are experimental in Horizon and **not sandboxed**: the code runs with your rights, which is why the
 launcher asks for `--trust-native-code`. The whole mod is in [`native/mixins/spider-man/`](native/mixins/spider-man/);
