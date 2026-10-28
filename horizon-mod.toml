@@ -1,7 +1,7 @@
 id = "swing"
 name = "Spider-Man"
 version = "0.1.0"
-description = "Web swinging (R), zips (Z), wall running and parkour. /swingmode web | odm | off."
+description = "Web swinging (R), zips (Z), wall running and parkour. /swingmode on | off."
 authors = ["wyddy7"]
 api = "0.1"
 side = "client"
