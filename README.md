@@ -13,8 +13,8 @@ Not affiliated with Marvel, Sony Interactive Entertainment, Insomniac Games, Moj
 
 ## Play it
 
-You need the Horizon launcher **0.2.23 or later**, your own Minecraft: Java Edition 26.3, and what Horizon's
-`prepare` needs from its own README (Java, to read your Minecraft install). Tested on macOS.
+You need the Horizon launcher **0.2.23 or later** and a Microsoft account that owns Minecraft: Java Edition.
+Tested on macOS.
 
 ```sh
 horizon-launcher update        # then restart the launcher
@@ -23,8 +23,8 @@ git clone https://github.com/wyddy7/minecraft-spider-man-rust
 horizon-launcher native-build minecraft-spider-man-rust/native/mixins/spider-man --trust-native-code
 ```
 
-The first build downloads the launcher's Rust and Horizon's source and compiles the game: count on 5–10 minutes and
-a few GB of disk. It becomes the **Native mods** instance in the launcher: pick it, press Play, press **F5** for third
+The first build downloads the launcher's own Rust (about 450 MB, once) and Horizon's source, then compiles the
+game: on an Apple M5 it took under 5 minutes, about 3 GB of disk in all. It becomes the **Native mods** instance in the launcher: pick it, press Play, press **F5** for third
 person, find something tall, hold **R**.
 
 Native mods are experimental in Horizon and **not sandboxed**: the code runs with your rights, which is why the
@@ -92,7 +92,7 @@ that goes past the template's one hook; things it shows that aren't written down
 Horizon's Nightly also has stable hook points for native mods (`native_hooks.rs`: tick, frame, keys, wheel,
 commands, HUD, zoom, minimap, a mod's Options page), and its own native mods are built on them: a mod using only those
 builds on any later Horizon without re-pinning. They came after v0.2.96, the version this mod is made for; moving its
-keys, commands and settings page onto them is next. Movement, camera and drawing in the world still need their own
+keys, commands and settings page onto them follows once a release has them (none does yet, v0.2.97 included). Movement, camera and drawing in the world still need their own
 hooks.
 
 How to build both bundles, the development loop and the hook list: [native/README.md](native/README.md).
