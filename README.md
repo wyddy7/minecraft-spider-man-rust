@@ -2,6 +2,8 @@
 
 ![Web swinging over a city map, landing on a tower, running up its face, vaulting the roof edge and webbing off again](assets/swing.gif)
 
+<sub>Recorded on the WebAssembly build. The native build plays the same, without the camera roll on walls (see Status).</sub>
+
 Web swinging, zips, wall running and parkour for [Horizon](https://github.com/horizon-rust/horizon), Minecraft: Java
 Edition rewritten in Rust. Tuned against Marvel's Spider-Man 2 gameplay: momentum carries from swing to swing, walls
 are floors, rooftops are runways.
@@ -11,7 +13,8 @@ Not affiliated with Marvel, Sony Interactive Entertainment, Insomniac Games, Moj
 
 ## Play it
 
-You need the Horizon launcher **0.2.23 or later** and your own Minecraft: Java Edition 26.3.
+You need the Horizon launcher **0.2.23 or later**, your own Minecraft: Java Edition 26.3, and what Horizon's
+`prepare` needs from its own README (Java, to read your Minecraft install). Tested on macOS.
 
 ```sh
 horizon-launcher update        # then restart the launcher
@@ -20,13 +23,15 @@ git clone https://github.com/wyddy7/minecraft-spider-man-rust
 horizon-launcher native-build minecraft-spider-man-rust/native/mixins/spider-man --trust-native-code
 ```
 
-The build takes a few minutes the first time and becomes the **Native mods** instance in the launcher: pick it,
-press Play, press **F5** for third person, find something tall, hold **R**.
+The first build downloads the launcher's Rust and Horizon's source and compiles the game: count on 5–10 minutes and
+a few GB of disk. It becomes the **Native mods** instance in the launcher: pick it, press Play, press **F5** for third
+person, find something tall, hold **R**.
 
 Native mods are experimental in Horizon and **not sandboxed**: the code runs with your rights, which is why the
 launcher asks for `--trust-native-code`. The whole mod is in [`native/mixins/spider-man/`](native/mixins/spider-man/);
-read it first. The mod is built for Horizon v0.2.96: Horizon moves fast, and a newer Horizon needs a re-pinned
-build of this mod. More in [native/README.md](native/README.md#install-with-the-horizon-launcher).
+read it first. The mod is made for Horizon v0.2.96, and the launcher builds exactly that version from source,
+whatever version you play otherwise, in an instance of its own. More in
+[native/README.md](native/README.md#install-with-the-horizon-launcher).
 
 ## Controls
 
@@ -70,21 +75,25 @@ that goes past the template's one hook; things it shows that aren't written down
   changes. Edit, save, and the running game has it in about a second. The shipped bundle compiles the same logic in.
 - **Porting a WebAssembly mod unchanged.** A facade with the mod SDK's names serves the SDK calls from the hooks'
   data, so the existing `src/` builds as either.
-- **Picking hook targets.** horizon-mixins refuses a HEAD on a function whose body has a macro, a BEFORE_CALL in one
-  with `?`, a RETURN in one with a closure. [native/README.md](native/README.md#hooks) lists the Horizon functions
-  this mod hooks and why each one.
-- **Injected modules are `pub(crate)`.** The game's binary and its library crate can't share a mod's state, so
-  anything drawn inside the library (the camera's view matrix, say) can't follow a mod's per-tick choice.
+- **Hook targets that work.** horizon-mixins' rules (no HEAD over a body with a macro, no BEFORE_CALL in one with
+  `?`, no RETURN in one with a closure) rule out many of the game's obvious functions, the level tick and the
+  model animation among them. [native/README.md](native/README.md#hooks) lists the Horizon functions this mod
+  hooks and what each hook does.
+- **What `pub(crate)` modules mean in practice.** A bundle's module lives in one crate, so the game's binary and its
+  library can't share a mod's state: anything drawn inside the library (the camera's view matrix, say) can't follow
+  a mod's per-tick choice.
 - **Your own world, not someone else's server.** Checking the connection's address isn't enough; the mod also
   requires the game's own server thread to be running.
-- **A panic in the mod doesn't take the game down**, and doesn't set off Horizon's crash reporter.
+- **A panic in the mod's logic doesn't take the game down**, and doesn't set off Horizon's crash reporter (the
+  hooks themselves are kept simple instead: a panic there is still a game crash).
 - **Sound.** Horizon updates a playing sound's volume only for ticking sounds: a loop whose loudness follows speed
   has to be one.
 
-Horizon's `main` now also has stable hook points for native mods (`native_hooks.rs`: tick, frame, keys, commands,
-HUD, a mod's Options page). A mod using only those doesn't need re-pinning for every release. Once they ship in a
-release, this mod moves its keys, commands and settings page onto them; movement, camera and drawing still need
-their own hooks.
+Horizon's Nightly also has stable hook points for native mods (`native_hooks.rs`: tick, frame, keys, wheel,
+commands, HUD, zoom, minimap, a mod's Options page), and its own native mods are built on them: a mod using only those
+builds on any later Horizon without re-pinning. They came after v0.2.96, the version this mod is made for; moving its
+keys, commands and settings page onto them is next. Movement, camera and drawing in the world still need their own
+hooks.
 
 How to build both bundles, the development loop and the hook list: [native/README.md](native/README.md).
 

@@ -3524,7 +3524,7 @@ pub mod spiderman {
         fn panel(&mut self) {
             let lines: Vec<String> = match self.mode {
                 Mode::Off => Vec::new(),
-                Mode::Web => vec!["Web: hold R, A/D side. Hold Z: pull, A/D orbit, Space yank".into()],
+                Mode::Web => vec!["Web: hold R, A/D side. Hold Z: zip, Space hauls".into()],
             };
             if lines != self.last_panel {
                 if lines.is_empty() {
@@ -3756,7 +3756,7 @@ pub mod spiderman {
             self.last_chest = None;
             self.spidey.reset();
             chat::show(match self.mode {
-                Mode::Web => "On: hold R to swing, let go to flip. Hold Z: web pull, A/D orbit, Space yanks the web",
+                Mode::Web => "On: hold R to swing, let go to flip. Hold Z to zip to the crosshair, Space hauls",
                 Mode::Off => "Off",
             });
             Ok(None)
