@@ -6,3 +6,7 @@ ref/
 docs/DECISIONS.md
 docs/video-spec.md
 tools/rec_sign.py
+# Build reports of the native tooling.
+target-build.json
+plug-storage/
+mod-storage/

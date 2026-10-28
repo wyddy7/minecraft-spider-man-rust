@@ -16,6 +16,9 @@ Horizon, proposed next).
 The mod needs Horizon's experimental `motion` capability, which is proposed upstream and not merged yet: until it
 is, build Horizon from the fork [`wyddy7/horizon`](https://github.com/wyddy7/horizon), branch `motion-api`.
 
+**Native mod (in progress, 0.2.0).** Horizon is moving to native mods (horizon-mixins). The same mod also builds
+as a native bundle on an unmodified Horizon v0.2.96 — no fork needed: see [native/](native/README.md).
+
 ## Controls
 
 | Input | Does |

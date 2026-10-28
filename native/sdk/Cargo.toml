@@ -1,0 +1,11 @@
+[package]
+# The name the mod imports: the mod builds unchanged against this facade.
+name = "horizon-mod-sdk"
+version = "0.0.0-dev-plug"
+edition = "2024"
+license = "MIT"
+description = "Development only: the Horizon mod SDK's client surface, served through horizon-dev-reload"
+
+[dependencies]
+horizon-dev-reload = { path = "../dev-reload" }
+serde_json = "1"
