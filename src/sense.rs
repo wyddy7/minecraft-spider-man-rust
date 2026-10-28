@@ -15,8 +15,6 @@ pub const RANGE: f64 = 250.0;
 /// horizon, in degrees.
 const FAN_YAW: [f64; 5] = [-40.0, -20.0, 0.0, 20.0, 40.0];
 const FAN_ELEVATION: [f64; 4] = [30.0, 45.0, 60.0, 75.0];
-/// The hooks' spread from the crosshair, degrees.
-const SPREAD: f64 = 3.0;
 /// A wall beside the body: rays this long at these heights over the feet
 /// (WallClimbManager.findAdjacentWall).
 const WALL_REACH: f64 = 0.8;
@@ -56,8 +54,6 @@ pub struct Sense {
     pub look: V,
     /// The crosshair's ray, and it turned left and right for a pair of hooks.
     pub aim: Probe,
-    pub aim_left: Probe,
-    pub aim_right: Probe,
     /// Rays above and ahead of the player for picking a swing anchor.
     pub fan: Vec<Probe>,
     /// A wall within reach of the body: the unit direction toward it.
@@ -102,7 +98,7 @@ impl Rays {
             i += n;
             at
         };
-        let (aim, aim_left, aim_right) = (probe(next(1)), probe(next(1)), probe(next(1)));
+        let aim = probe(next(1));
         let fan_at = next(FAN_YAW.len() * FAN_ELEVATION.len());
         let fan = (0..FAN_YAW.len() * FAN_ELEVATION.len())
             .map(|k| probe(fan_at + k))
@@ -137,8 +133,6 @@ impl Rays {
             eye: st.eye,
             look: st.look,
             aim,
-            aim_left,
-            aim_right,
             fan,
             wall,
             wall_above,
@@ -161,11 +155,7 @@ impl Rays {
         let eye_ray = |dir: P| ray(true, P::default(), dir, RANGE, false);
         let look = P::of(&sense.look);
         let yaw = f64::from(yaw);
-        let mut rays = vec![
-            eye_ray(look),
-            eye_ray(turn_about_up(look, -SPREAD)),
-            eye_ray(turn_about_up(look, SPREAD)),
-        ];
+        let mut rays = vec![eye_ray(look)];
         for off in FAN_YAW {
             for elevation in FAN_ELEVATION {
                 rays.push(eye_ray(view_vector(yaw + off, -elevation)));
@@ -205,10 +195,4 @@ impl Rays {
 fn view_vector(yaw: f64, pitch: f64) -> P {
     let (y, p) = (yaw.to_radians(), pitch.to_radians());
     P::new(-y.sin() * p.cos(), -p.sin(), y.cos() * p.cos())
-}
-
-/// `v` turned about the world's up as `degrees` more yaw turns the view.
-fn turn_about_up(v: P, degrees: f64) -> P {
-    let (s, c) = degrees.to_radians().sin_cos();
-    P::new(v.x * c - v.z * s, v.y, v.x * s + v.z * c)
 }

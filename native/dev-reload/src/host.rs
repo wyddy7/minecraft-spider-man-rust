@@ -69,11 +69,11 @@ impl Host {
         if self.call.is_some_and(|(seen, _)| seen == modified) {
             return;
         }
-        self.loads += 1;
+        let attempt = self.loads + 1;
         let copy = std::env::temp_dir().join(format!(
             "horizon-dev-plug-{}-{}.{}",
             std::process::id(),
-            self.loads,
+            attempt,
             path.extension().and_then(|e| e.to_str()).unwrap_or("so")
         ));
         if let Err(error) = std::fs::copy(&path, &copy) {
@@ -98,6 +98,7 @@ impl Host {
         // SAFETY: plugs export this symbol with exactly the PlugCall signature.
         let call = unsafe { std::mem::transmute::<*mut c_void, PlugCall>(symbol) };
         self.call = Some((modified, call));
+        self.loads = attempt;
         eprintln!("[dev-reload] loaded plug build {}", self.loads);
     }
 }

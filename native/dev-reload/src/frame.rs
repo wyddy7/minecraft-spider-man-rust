@@ -4,6 +4,9 @@
 
 use std::sync::Mutex;
 
+/// Whether the camera may turn the whole view (here: yes; a shipped mod: no).
+pub const WALL_TURN: bool = true;
+
 static VIEW_TURN: Mutex<Option<[f32; 4]>> = Mutex::new(None);
 
 /// The camera orientation (x, y, z, w quaternion: camera axes to world)

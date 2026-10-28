@@ -64,8 +64,16 @@ def abi_module():
         panel: None,
     }});
 
+    /// One tick of the mod; None if it panicked (it then starts over and the
+    /// game forgets its requests), so a bug in the mod never takes the game down.
     pub fn tick(input: &abi::Input) -> Option<abi::Output> {{
-        let out = {BASE}::spiderman::plug_tick(input);
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {{
+            {BASE}::spiderman::plug_tick(input)
+        }}));
+        let Ok(out) = out else {{
+            {BASE}::spiderman::plug_reset();
+            return None;
+        }};
         if let Ok(mut current) = CURRENT.lock() {{
             current.apply(&out);
         }}
@@ -88,6 +96,7 @@ def abi_module():
     /// The wall camera's whole-view turn needs a crate both the game and its
     /// library see; a shipped mod keeps the game's own view.
     pub mod frame {{
+        pub const WALL_TURN: bool = false;
         pub fn set_view_turn(_q: Option<[f32; 4]>) {{}}
     }}
 }}
@@ -132,6 +141,15 @@ pub fn plug_tick(
     input: &{BASE}::horizon_dev_reload::abi::Input,
 ) -> {BASE}::horizon_dev_reload::abi::Output {{
     MOD.with(|slot| {BASE}::horizon_mod_sdk::run_typed::<{ty}>(slot, input))
+}}
+
+/// After a panic: the mod starts over from `init` next tick.
+pub fn plug_reset() {{
+    MOD.with(|slot| {{
+        if let Ok(mut slot) = slot.try_borrow_mut() {{
+            *slot = None;
+        }}
+    }});
 }}""",
     )
     return f"pub mod spiderman {{\n{indent(lib)}}}\n"
