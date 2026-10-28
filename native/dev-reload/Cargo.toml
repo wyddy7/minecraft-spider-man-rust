@@ -1,0 +1,15 @@
+[package]
+name = "horizon-dev-reload"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+description = "Development only: runs a native mod's logic from a library rebuilt while the game runs"
+
+[features]
+# The game's side: finding, loading and calling the plug.
+host = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

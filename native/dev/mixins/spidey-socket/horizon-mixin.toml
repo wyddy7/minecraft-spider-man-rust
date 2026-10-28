@@ -1,0 +1,103 @@
+[mod]
+id = "spidey-socket"
+version = "0.1.0"
+priority = 100
+
+[compatibility]
+horizon_revision = "531ca30aee7df277b3c64798f77fe6132d99e962"
+
+[[module]]
+id = "socket"
+file = "crates/horizon-client/src/game.rs"
+name = "spidey_socket"
+source = "socket.rs"
+
+[[injection]]
+id = "before-level-tick"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::tick_remote"
+helper = "tick.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+[[injection]]
+id = "before-send-state"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::remote_send_state"
+helper = "send_state.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+[[injection]]
+id = "after-send-state"
+kind = "RETURN"
+target = "horizon_client::game::remote::Game<'_>::remote_send_state"
+helper = "send_state_end.rs"
+bindings = [
+  { name = "value", ty = "()", value = "$value" },
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[injection]]
+id = "plug-command"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::chat::Game<'_>::handle_chat_input"
+helper = "chat.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "message", ty = "&str", value = "message" },
+]
+
+[[injection]]
+id = "plug-ropes"
+kind = "HEAD"
+target = "horizon_client::game::leads::Game<'_>::leash_geometry"
+helper = "ropes.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<horizon_client::mesher::Vertex>", value = "&mut *out" },
+]
+
+[[injection]]
+id = "posed-player"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::player_model_geometry"
+helper = "model.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<horizon_client::mesher::Vertex>", value = "&mut *out" },
+]
+
+[[injection]]
+id = "plug-camera"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::camera_view"
+helper = "camera.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "partial", ty = "f32", value = "partial" },
+]
+
+[[injection]]
+id = "turned-view"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::camera::view_matrix"
+helper = "view.rs"
+bindings = []
+
+[[injection]]
+id = "plug-command-sent"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::remote::Game<'_>::send_chat"
+helper = "chat.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "message", ty = "&str", value = "message" },
+]

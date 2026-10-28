@@ -1,0 +1,6 @@
+# Development tooling of the native mod (not part of the shipped bundle):
+# dev-reload = the socket the dev game loads the plug through, sdk = the mod
+# SDK's surface served through it, plug = this repository's mod as that plug.
+[workspace]
+members = ["dev-reload", "sdk", "plug"]
+resolver = "2"
