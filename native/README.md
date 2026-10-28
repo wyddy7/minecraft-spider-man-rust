@@ -41,9 +41,10 @@ bounded, and a panic in the mod skips its tick (it starts over) instead of crash
 ## Install with the Horizon launcher
 
 Native mods are experimental in Horizon and off by default. They are not sandboxed: the mod's code runs with your
-rights, so read `mixins/spider-man/` before building it. Tested on macOS with launcher 0.2.22.
+rights, so read `mixins/spider-man/` before building it. Tested on macOS with launcher 0.2.23.
 
-1. Update the launcher (native builds need 0.2.21 or later): `horizon-launcher update`, then restart it.
+1. Update the launcher (0.2.23 or later: earlier ones need a Rust of your own on the PATH for native builds):
+   `horizon-launcher update`, then restart it.
 2. Prepare the game's resources from your own Minecraft 26.3, if the launcher hasn't yet:
    `horizon-launcher prepare`.
 3. Get this repository and build the mod into a game of its own:
@@ -58,15 +59,6 @@ rights, so read `mixins/spider-man/` before building it. Tested on macOS with la
    instance selected, it builds for that one: pass `--instance` to choose).
 4. In the launcher pick the "Native mods" instance and press Play (a Microsoft account that owns Minecraft:
    Java Edition). Press F5 for third person, hold R.
-
-If step 3 stops at `failed to start cargo metadata`, the launcher started horizon-mixins without its own Rust
-on the PATH. Until that is fixed in the launcher, add it for the build (macOS path shown; the version is the one
-the launcher downloaded):
-
-```sh
-PATH="$HOME/Library/Application Support/horizon-launcher/rust/1.99.1-aarch64-apple-darwin/bin:$PATH" \
-  horizon-launcher native-build minecraft-spider-man-rust/native/mixins/spider-man --trust-native-code
-```
 
 ## Build the shipped mod from source
 

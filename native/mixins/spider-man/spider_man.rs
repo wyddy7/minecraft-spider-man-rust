@@ -951,13 +951,16 @@ pub mod horizon_dev_reload {
     /// The game's panic hook reports a crash (log, report file, upload) at
     /// the panic itself, before the catch: a panic inside the mod's tick is
     /// only logged as the mod's, so a later real crash still gets reported.
+    /// (A panic that can't unwind, such as one inside a `Drop` while
+    /// unwinding, still aborts the game; it is then logged as the mod's only.)
     fn quiet_mod_panics() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
             let game_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 if IN_MOD.get() {
-                    eprintln!("[spider-man] the mod panicked and starts over: {info}");
+                    // The game's log, never a panic of its own (stderr may be closed).
+                    log::warn!("[spider-man] the mod panicked and starts over: {info}");
                 } else {
                     game_hook(info);
                 }

@@ -99,6 +99,9 @@ impl Host {
         let call = unsafe { std::mem::transmute::<*mut c_void, PlugCall>(symbol) };
         self.call = Some((modified, call));
         self.loads = attempt;
+        // A new build starts with nothing asked: the old one's ropes, pose and
+        // camera don't linger.
+        self.current = Current::default();
         eprintln!("[dev-reload] loaded plug build {}", self.loads);
     }
 }
