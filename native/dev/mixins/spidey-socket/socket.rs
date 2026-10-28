@@ -233,7 +233,10 @@ pub fn tick(game: &mut super::Game<'_>) {
 }
 
 /// Wind while the plug asks for it: the elytra's flying loop, heard without
-/// distance, its volume (0..0.5) and pitch set every tick; silent at 0.
+/// distance, its volume (0..0.5) and pitch set every tick; silent at 0. The
+/// engine sends a new volume to the sound card only for ticking sounds, so the
+/// loop is a biome-style one standing still (`direction` 0): its volume is
+/// `fade / 40`, and the hook sets `fade`.
 fn wind(game: &mut super::Game<'_>, volume: f32) {
     use horizon_client::sound_engine::{
         Attenuation, NEUTRAL, SoundEngine, SoundInstance, Sounds, Ticking,
@@ -256,7 +259,7 @@ fn wind(game: &mut super::Game<'_>, volume: f32) {
                 true,
             );
             s.can_start_silent = true;
-            s.ticking = Ticking::No;
+            s.ticking = Ticking::BiomeLoop { fade: 0, direction: 0 };
             let (id, _) = game.audio.play_instance(s, false);
             id
         }
@@ -264,7 +267,10 @@ fn wind(game: &mut super::Game<'_>, volume: f32) {
     };
     shared(|s| s.wind = Some(id));
     if let Some(s) = game.audio.engine.instance_mut(id) {
-        s.volume = volume;
+        s.ticking = Ticking::BiomeLoop {
+            fade: (volume * 40.0).round() as i32,
+            direction: 0,
+        };
         s.pitch = 0.9 + volume * 0.6;
     }
 }
