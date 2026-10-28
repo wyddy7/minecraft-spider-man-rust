@@ -1,8 +1,8 @@
 # Spider-Man for Horizon
 
-![Web swinging over a city map, landing on a tower, running up its face, vaulting the roof edge and webbing off again](docs/swing.gif)
+![Diving off a rooftop, web swinging down a street of towers, then a web pull that slaps into a wall](docs/swing.gif)
 
-<sub>Recorded on the WebAssembly build. The native build plays the same, without the camera roll on walls (see Status).</sub>
+<sub>Recorded on the WebAssembly build; the native build plays the same.</sub>
 
 Web swinging, zips, wall running and parkour for [Horizon](https://github.com/horizon-rust/horizon), Minecraft: Java
 Edition rewritten in Rust. Tuned against Marvel's Spider-Man 2 gameplay: momentum carries from swing to swing, walls
