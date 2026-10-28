@@ -4,7 +4,7 @@
 
 - A native Horizon mod (`native/`): the same `src/` as a horizon-mixins bundle on Horizon v0.2.96, no fork needed.
   Swing, zip, wall run, parkour, poses, web strands, chase camera, shake, `/swingmode`, and the fall reset on
-  your own world's server; wind is wired but not yet checked by ear. Not yet: the wall-as-floor roll, Controls rows, the settings page, the HUD panel.
+  your own world's server, wind. Not yet: the wall-as-floor roll, Controls rows, the settings page, the HUD panel.
 - A development loop with live reload: the game loads the mod as a library and picks up a rebuild within about a
   second (`native/tools/watch.sh`).
 
