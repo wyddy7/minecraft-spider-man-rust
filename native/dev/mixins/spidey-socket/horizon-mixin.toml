@@ -4,7 +4,7 @@ version = "0.1.0"
 priority = 100
 
 [compatibility]
-horizon_revision = "531ca30aee7df277b3c64798f77fe6132d99e962"
+horizon_revision = "981bbd68264981dbea23f6e03659abd08a7563ac"
 
 [[module]]
 id = "socket"
@@ -96,7 +96,7 @@ id = "plug-command-sent"
 kind = "HEAD"
 cancellable = true
 target = "horizon_client::game::remote::Game<'_>::send_chat"
-helper = "chat.rs"
+helper = "chat_sent.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "message", ty = "&str", value = "message" },

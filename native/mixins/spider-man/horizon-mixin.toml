@@ -88,7 +88,7 @@ id = "plug-command-sent"
 kind = "HEAD"
 cancellable = true
 target = "horizon_client::game::remote::Game<'_>::send_chat"
-helper = "chat.rs"
+helper = "chat_sent.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
   { name = "message", ty = "&str", value = "message" },

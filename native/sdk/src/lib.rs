@@ -13,6 +13,7 @@ thread_local! {
     static HELD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// The mod's registered keys: name and default physical key.
     static KEYS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    static INIT_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn input<T>(f: impl FnOnce(&Input) -> T) -> T {
@@ -312,7 +313,9 @@ pub fn run_typed<T: Mod>(slot: &RefCell<Option<T>>, input: &Input) -> Output {
     if slot.is_none() {
         match T::init() {
             Ok((m, _registration)) => *slot = Some(m),
-            Err(e) => log::write(log::Level::Error, &e),
+            // Tried again next tick; said once.
+            Err(e) if !INIT_FAILED.replace(true) => log::write(log::Level::Error, &e),
+            Err(_) => {}
         }
     }
     if let Some(m) = slot.as_mut() {
@@ -352,9 +355,21 @@ macro_rules! export_mod {
             write: extern "C" fn(*mut ::core::ffi::c_void, *const u8, usize),
             ctx: *mut ::core::ffi::c_void,
         ) {
-            // SAFETY: the caller guarantees the input range.
-            let input = unsafe { ::std::slice::from_raw_parts(input, input_len) };
-            let out = __MOD.with(|slot| $crate::run_tick::<$ty>(slot, input));
+            let input = if input.is_null() {
+                &[][..]
+            } else {
+                // SAFETY: the caller guarantees the input range.
+                unsafe { ::std::slice::from_raw_parts(input, input_len) }
+            };
+            // A panic must not cross into the game: the mod starts over and
+            // this tick has no output (the game forgets the mod's requests).
+            let out = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                __MOD.with(|slot| $crate::run_tick::<$ty>(slot, input))
+            }))
+            .unwrap_or_else(|_| {
+                __MOD.with(|slot| slot.replace(None));
+                Vec::new()
+            });
             write(ctx, out.as_ptr(), out.len());
         }
     };

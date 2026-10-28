@@ -1,37 +1,23 @@
-//! Swing: web swinging and ODM gear for Horizon, on the local fork's
-//! `motion` capability.
+//! Swing: Spider-Man web swinging for Horizon, on the `motion` capability
+//! (or, built as a native mod, the same capability as game-side hooks).
 //!
 //! The mod drives the player's velocity itself from the first hook until
 //! the feet touch the ground: each tick it takes the real displacement of
 //! the last tick (so walls and floors still stop you), adds its own gravity
 //! and forces, and hands the game the result. The game's air drag (0.91
 //! per tick sideways) never applies in flight, so speed carries from one
-//! swing or hook to the next.
+//! swing to the next.
 //!
 //! - Web (Marvel's Spider-Man, 2018): hold R. The anchor is picked above and
 //!   ahead from a fan of rays, biased by A/D; the swing is a pendulum with a
 //!   short tug when the web bites; with no A/D the arc is pulled straight
 //!   along the view; W pumps; letting go on the upswing throws you up and
 //!   forward.
-//! - ODM (as in Attack on Titan Tribute Game, keys as in Danny's AoT): G and
-//!   H fire the left and right hooks, spread a little apart; they fly, bite
-//!   and hold while the key is held (a tap still holds 0.3 s). Hooked with
-//!   no gas, the cables pull softly and brake you moving away. Space burns
-//!   gas: hooked, your speed is kept and only turned, to at most 88 degrees
-//!   from the anchor (the midpoint of two hooks), plus a little more every
-//!   tick, so you circle the anchor and gain speed; W reels in (a tighter
-//!   angle: you dive at the anchor), S reels out, A/D push the orbit
-//!   sideways. Unhooked, gas thrusts along WASD. Double-tap a direction in
-//!   the air for a burst. Gravity halves while a hook is above you.
-//!
-//! Numbers come from a written description of AoTTG's ODM (Unity units per
-//! 0.02 s, converted to blocks per 0.05 s tick); the ones marked "tuned"
-//! are ours.
 use horizon_mod_sdk::{
     Mod, Registration, chat, game,
     hud::{self, Corner, Line},
     input,
-    motion::{self, Rope, Vec3 as V},
+    motion::{self, Vec3 as V},
     render, storage, ui,
 };
 use std::cell::RefCell;
@@ -85,21 +71,6 @@ impl P {
     fn clamp(self, max: f64) -> P {
         let l = self.len();
         if l > max { self * (max / l) } else { self }
-    }
-    /// `self` (a unit vector) turned toward the unit `to` by at most `max`
-    /// radians, in the plane of the two.
-    fn turn_toward(self, to: P, max: f64) -> P {
-        let angle = self.dot(to).clamp(-1.0, 1.0).acos();
-        if angle < 1e-6 {
-            return self;
-        }
-        // The part of `to` across `self`: the plane's second axis.
-        let across = (to - self * self.dot(to)).norm();
-        if across.len() < 1e-9 {
-            return self;
-        }
-        let t = angle.min(max);
-        self * t.cos() + across * t.sin()
     }
 }
 impl Add for P {
@@ -181,104 +152,16 @@ mod web {
     pub const COLOR: u32 = 0xEE_EEEE;
 }
 
-mod odm {
-    /// AoTTG: gravity 20 u/s², 10 with an anchor above you.
-    pub const GRAVITY: f64 = 0.05;
-    pub const GRAVITY_ANCHORED: f64 = 0.025;
-    pub const DAMP: f64 = 0.998;
-    /// 150 u/s, plus your speed along the shot.
-    pub const HOOK_SPEED: f64 = 7.5;
-    /// A tapped hook still holds this long after it is fired: 0.3 s.
-    pub const MIN_HOLD: u32 = 6;
-    /// The soft pull toward the anchor with no gas: 10 u/s², 20 on one hook.
-    pub const PULL: f64 = 0.025;
-    pub const PULL_SINGLE: f64 = 0.05;
-    /// Moving away from the anchor with no gas: -2·v per second.
-    pub const BRAKE: f64 = 0.9;
-    /// The orbit: the speed turned to at most 88.2 degrees from the anchor,
-    /// times (1 + reel), reel in -0.8..0.8; +0.1 u/s every 0.02 s.
-    pub const ORBIT_ANGLE: f64 = 1.539_38;
-    pub const REEL_IN: f64 = -0.8;
-    pub const REEL_OUT: f64 = 0.8;
-    pub const SPEED_GAIN: f64 = 0.0125;
-    /// A/D sideways push in the orbit (tuned).
-    pub const STRAFE: f64 = 0.03;
-    /// When a hook bites: a shove toward the anchor and a lift (tuned).
-    pub const BITE: f64 = 0.1;
-    pub const BITE_UP: f64 = 0.05;
-    /// Unhooked gas along WASD: 30 u/s².
-    pub const THRUST: f64 = 0.075;
-    /// Burst: +40 u/s, 4 gas, 0.3 s apart; the speed above the speed before
-    /// it bleeds off at 1.7·v per second for 0.5 s.
-    pub const BURST: f64 = 2.0;
-    pub const BURST_GAS: f64 = 4.0;
-    pub const BURST_COOLDOWN: u32 = 6;
-    pub const BURST_DECAY: f64 = 0.915;
-    pub const BURST_TICKS: u32 = 10;
-    /// Two presses of a direction this close: a burst (tuned).
-    pub const DOUBLE_TAP: u64 = 6;
-    /// Gas: 100, 0.2 a hook; per tick of gas and the refill on the ground
-    /// are tuned (AoTTG refills at supply points).
-    pub const TANK: f64 = 100.0;
-    pub const HOOK_GAS: f64 = 0.2;
-    pub const GAS_PER_TICK: f64 = 0.15;
-    pub const REFILL: f64 = 1.0;
-    pub const MAX_SPEED: f64 = 3.0;
-    pub const COLOR: u32 = 0x40_454D;
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Web,
-    Odm,
     Off,
 }
 
-#[derive(Clone, Copy)]
-struct Hook {
-    anchor: P,
-    /// Ticks until the hook bites, and the whole flight.
-    flying: u32,
-    flight: u32,
-    /// Ticks since it was fired.
-    age: u32,
-}
-impl Hook {
-    fn holds(&self) -> bool {
-        self.flying == 0
-    }
-    /// Where the cable's end is drawn: in flight, part way from the eyes.
-    fn end(&self, eye: P) -> P {
-        if self.holds() {
-            self.anchor
-        } else {
-            let done = 1.0 - f64::from(self.flying) / f64::from(self.flight.max(1));
-            eye + (self.anchor - eye) * done
-        }
-    }
-}
-
-const DIRS: [&str; 4] = ["KeyW", "KeyA", "KeyS", "KeyD"];
-
 struct Swing {
     mode: Mode,
-    /// Web: one rope. ODM: left (G) and right (H).
-    hooks: [Option<Hook>; 2],
-    /// Hook keys held last tick.
-    held: [bool; 2],
     /// The chest last tick while the mod drives.
     last_chest: Option<P>,
-    /// From the first hook until the feet touch the ground: the mod drives
-    /// the velocity and there is no fall damage.
-    flying: bool,
-    gas: f64,
-    /// WASD held last tick, and the tick each was last pressed.
-    dirs_held: [bool; 4],
-    pressed_at: [u64; 4],
-    burst_cooldown: u32,
-    /// The burst's leftover: ticks, and the speed before it.
-    burst_left: u32,
-    burst_base: f64,
     now: u64,
     last_panel: Vec<String>,
     /// A fixed camera for checking poses (`/swingmode view`), and the chase
@@ -294,11 +177,9 @@ struct Swing {
 
 /// The mod's own keys (`input.register-key`: the player rebinds them on the
 /// mod's page in Options > Mods), as the names the code reads.
-const MOD_KEYS: [(&str, &str, &str, &str); 4] = [
+const MOD_KEYS: [(&str, &str, &str, &str); 2] = [
     ("web", "Web swing", "key.keyboard.r", "KeyR"),
     ("zip", "Web zip", "key.keyboard.z", "KeyZ"),
-    ("hook_left", "ODM left hook", "key.keyboard.g", "KeyG"),
-    ("hook_right", "ODM right hook", "key.keyboard.h", "KeyH"),
 ];
 /// The game's movement mappings, as bound by the player (`input.mapping`).
 const MAPPINGS: [(&str, &str); 7] = [
@@ -443,175 +324,10 @@ impl Swing {
         ]);
     }
 
-    fn active(&self) -> bool {
-        self.hooks.iter().any(Option::is_some)
-    }
-
-    fn tick_odm(&mut self, state: &Sense, chest: P, mut v: P) -> P {
-        let look = P::of(&state.look);
-        let right = look.cross(UP).norm();
-        let gas = key(state, "Space") && !state.on_ground && self.gas > 0.0;
-        // The hooks: fired on press along the spread rays, held while the key is.
-        let keys = [key(state, "KeyG"), key(state, "KeyH")];
-        let aims = [&state.aim_left, &state.aim_right];
-        for side in 0..2 {
-            if keys[side] && !self.held[side] && self.gas >= odm::HOOK_GAS {
-                if let Some(hit) = aims[side].hit.as_ref().or(state.aim.hit.as_ref()) {
-                    let anchor = P::of(hit);
-                    let shot = anchor - chest;
-                    let speed = odm::HOOK_SPEED + v.dot(shot.norm()).max(0.0);
-                    let flight = (shot.len() / speed).ceil().max(1.0) as u32;
-                    self.hooks[side] = Some(Hook {
-                        anchor,
-                        flying: flight,
-                        flight,
-                        age: 0,
-                    });
-                    self.gas -= odm::HOOK_GAS;
-                    self.flying = true;
-                }
-            }
-            let other_holds = self.hooks[1 - side].is_some_and(|h| h.holds());
-            if let Some(h) = self.hooks[side].as_mut() {
-                h.age += 1;
-                if h.flying > 0 {
-                    h.flying -= 1;
-                    if h.flying == 0 {
-                        // The bite: a shove toward the anchor and a lift.
-                        let k = if other_holds { 0.8 } else { 1.0 };
-                        v = v + (h.anchor - chest).norm() * (odm::BITE * k) + UP * odm::BITE_UP;
-                    }
-                }
-                if !keys[side] && h.age >= odm::MIN_HOLD {
-                    self.hooks[side] = None;
-                }
-            }
-            self.held[side] = keys[side];
-        }
-        let holding: Vec<P> = self
-            .hooks
-            .iter()
-            .flatten()
-            .filter(|h| h.holds())
-            .map(|h| h.anchor)
-            .collect();
-        let anchor = match holding.as_slice() {
-            [a] => Some(*a),
-            [a, b] => Some((*a + *b) * 0.5),
-            _ => None,
-        };
-        let gravity = if anchor.is_some_and(|a| a.y > chest.y) {
-            odm::GRAVITY_ANCHORED
-        } else {
-            odm::GRAVITY
-        };
-        v = v * odm::DAMP - UP * gravity;
-        match anchor {
-            Some(a) if gas => {
-                // The orbit: keep the speed, turn it to at most the angle
-                // from the anchor, a little faster every tick.
-                let to = (a - chest).norm();
-                let reel = if key(state, "KeyW") {
-                    odm::REEL_IN
-                } else if key(state, "KeyS") {
-                    odm::REEL_OUT
-                } else {
-                    0.0
-                };
-                let dir = if v.len() > 0.05 { v.norm() } else { look };
-                let speed = v.len() + odm::SPEED_GAIN;
-                v = to.turn_toward(dir, odm::ORBIT_ANGLE * (1.0 + reel)) * speed;
-                v = v + right * ((axis(state, "KeyD") - axis(state, "KeyA")) * odm::STRAFE);
-                self.gas -= odm::GAS_PER_TICK;
-            }
-            Some(a) => {
-                let to = (a - chest).norm();
-                let pull = if holding.len() == 1 {
-                    odm::PULL_SINGLE
-                } else {
-                    odm::PULL
-                };
-                v = v + to * pull;
-                if v.dot(to) < 0.0 {
-                    v = v * odm::BRAKE;
-                }
-            }
-            None if gas => {
-                let wasd = look * (axis(state, "KeyW") - axis(state, "KeyS"))
-                    + right * (axis(state, "KeyD") - axis(state, "KeyA"));
-                let dir = if wasd.len() > 0.0 { wasd.norm() } else { look };
-                v = v + dir * odm::THRUST;
-                self.gas -= odm::GAS_PER_TICK;
-            }
-            None => {}
-        }
-        // Burst: a direction pressed twice quickly in the air.
-        self.burst_cooldown = self.burst_cooldown.saturating_sub(1);
-        for (i, name) in DIRS.iter().enumerate() {
-            let down = key(state, name);
-            if down && !self.dirs_held[i] {
-                let quick = self.now - self.pressed_at[i] <= odm::DOUBLE_TAP;
-                if quick
-                    && !state.on_ground
-                    && self.burst_cooldown == 0
-                    && self.gas >= odm::BURST_GAS
-                {
-                    let dir = [look, right * -1.0, look * -1.0, right][i];
-                    self.burst_base = v.len();
-                    v = v + dir * odm::BURST;
-                    self.gas -= odm::BURST_GAS;
-                    self.burst_cooldown = odm::BURST_COOLDOWN;
-                    self.burst_left = odm::BURST_TICKS;
-                    self.flying = true;
-                }
-                self.pressed_at[i] = self.now;
-            }
-            self.dirs_held[i] = down;
-        }
-        if self.burst_left > 0 {
-            self.burst_left -= 1;
-            let speed = v.len();
-            if speed > self.burst_base {
-                v = v.norm() * (self.burst_base + (speed - self.burst_base) * odm::BURST_DECAY);
-            }
-        }
-        self.gas = self.gas.max(0.0);
-        if state.on_ground {
-            self.gas = (self.gas + odm::REFILL).min(odm::TANK);
-        }
-        v
-    }
-
-    fn ropes(&self, eye: P) -> Vec<Rope> {
-        let color = if self.mode == Mode::Web {
-            web::COLOR
-        } else {
-            odm::COLOR
-        };
-        self.hooks
-            .iter()
-            .flatten()
-            .map(|h| Rope {
-                to: h.end(eye).wit(),
-                color,
-                progress: 1.0,
-                wave: 0.0,
-                from: None,
-            })
-            .collect()
-    }
-
     fn panel(&mut self) {
         let lines: Vec<String> = match self.mode {
             Mode::Off => Vec::new(),
             Mode::Web => vec!["Web: hold R, A/D side. Hold Z: pull, A/D orbit, Space yank".into()],
-            Mode::Odm => {
-                let bar = (self.gas / odm::TANK * 20.0).round() as usize;
-                vec![
-                    "ODM: G / H hooks, Space gas, W/S reel, A/D orbit".into(),
-                    format!("Gas [{}{}]", "|".repeat(bar), ".".repeat(20 - bar)),
-                ]
-            }
         };
         if lines != self.last_panel {
             if lines.is_empty() {
@@ -638,16 +354,7 @@ impl Mod for Swing {
         Ok((
             Swing {
                 mode: Mode::Web,
-                hooks: [None, None],
-                held: [false; 2],
                 last_chest: None,
-                flying: false,
-                gas: odm::TANK,
-                dirs_held: [false; 4],
-                pressed_at: [0; 4],
-                burst_cooldown: 0,
-                burst_left: 0,
-                burst_base: 0.0,
                 now: 100,
                 last_panel: Vec::new(),
                 spidey: spidey::Spidey::default(),
@@ -677,9 +384,7 @@ impl Mod for Swing {
         read_keys();
         self.panel();
         let (Some(st), Some(player)) = (motion::get(), game::get_player()) else {
-            self.hooks = [None, None];
             self.last_chest = None;
-            self.flying = false;
             self.sense = None;
             return;
         };
@@ -687,7 +392,6 @@ impl Mod for Swing {
         self.rays.ask(&state, player.yaw);
         self.sense = Some(state.clone());
         let chest = P::new(player.x, player.y + CHEST, player.z);
-        let eye = P::of(&state.eye);
         // The camera: a fixed view if one is set, else in web mode a chase
         // camera that backs off in flight.
         let target = if self.spidey.driving { CHASE_FLY } else { CHASE_GROUND };
@@ -739,32 +443,9 @@ impl Mod for Swing {
             motion::set_ropes(&self.spidey.ropes(chest, player.yaw));
             return;
         }
-        // In flight, the velocity is last tick's real displacement (walls cut
-        // it); otherwise the game's own.
-        let v = match self.last_chest {
-            Some(last) if self.flying => chest - last,
-            _ => P::of(&state.velocity),
-        };
-        let v = match self.mode {
-            Mode::Off | Mode::Web => v,
-            Mode::Odm => self.tick_odm(&state, chest, v),
-        };
-        if self.flying && state.on_ground && !self.active() && self.burst_left == 0 {
-            self.flying = false;
-        }
-        if self.flying && self.mode != Mode::Off {
-            let max = if self.mode == Mode::Web {
-                web::MAX_SPEED
-            } else {
-                odm::MAX_SPEED
-            };
-            motion::set_velocity(v.clamp(max).wit());
-            motion::reset_fall();
-            self.last_chest = Some(chest);
-        } else {
-            self.last_chest = None;
-        }
-        motion::set_ropes(&self.ropes(eye));
+        // Off: the game moves the player as always.
+        self.last_chest = None;
+        motion::set_ropes(&[]);
     }
 
     fn ui_select(&mut self, id: u32, _row: u32) {
@@ -862,25 +543,23 @@ impl Mod for Swing {
                 if self.spidey.jump_start { "on" } else { "off" }
             )));
         }
+        // The commands mirror the settings (`delay`, `jump`) plus ones with no
+        // button (`view`, `pose`, `debug`); `on`/`off` switch the mod.
         self.mode = match args.trim() {
-            "web" => Mode::Web,
-            "odm" => Mode::Odm,
+            "on" | "web" => Mode::Web,
             "off" => Mode::Off,
             "" => {
                 return Ok(Some(
-                    "/swingmode web: R swing, hold Z web pull, Space yank. /swingmode odm: G and H hooks, Space gas. /swingmode off."
+                    "/swingmode on|off · delay 0..2 · jump on|off (the settings page's) · view side|front|back|off · debug"
                         .into(),
                 ));
             }
-            other => return Err(format!("Unknown mode {other}: web, odm or off")),
+            other => return Err(format!("/swingmode on|off|delay|jump|view|debug, not {other}")),
         };
-        self.hooks = [None, None];
-        self.held = [false; 2];
-        self.flying = false;
+        self.last_chest = None;
         self.spidey.reset();
         chat::show(match self.mode {
-            Mode::Web => "Web: hold R to swing, let go to flip. Hold Z: web pull, A/D orbit, Space yanks the web",
-            Mode::Odm => "ODM gear: G and H fire hooks, Space burns gas, W/S reel",
+            Mode::Web => "On: hold R to swing, let go to flip. Hold Z: web pull, A/D orbit, Space yanks the web",
             Mode::Off => "Off",
         });
         Ok(None)

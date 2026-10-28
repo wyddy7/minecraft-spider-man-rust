@@ -1,10 +1,12 @@
-// Development only: the game's side of a movement plug (horizon-dev-reload),
-// Horizon's former `motion` capability as native hooks. Each tick it hands
-// the plug the player, its keys and the hits of the rays it asked for, then
+// The game's side of the mod: Horizon's former `motion` capability as native
+// hooks. Each tick it hands the mod (in development, a library reloaded while
+// the game runs) the player, its keys and the hits of the rays it asked for, then
 // applies what comes back: velocity, the fall reset (and the own world's
 // server hearing the player as grounded), ropes, the pose, the camera and its
 // shake, chat lines. Acts only in the player's own world (single player or a
-// LAN world they host); on another server the plug only sees keys.
+// LAN world they host); on another server the mod only sees keys. Values from
+// the mod that are not finite are dropped, and a panic in it stops the mod for
+// that tick, not the game.
 
 use horizon_dev_reload::abi::{Camera, Input, Player, Pose, Ray, State, Vec3};
 use std::ops::ControlFlow;
@@ -68,10 +70,54 @@ fn dvec(v: &Vec3) -> glam::DVec3 {
     glam::DVec3::new(v.x, v.y, v.z)
 }
 
+/// The player's own world: the world runs in this game (in-frame), or this
+/// game's own server thread is running and the connection is to it. An address
+/// alone is not enough: a remote server can be reached by a host named `local`.
 fn local(game: &super::Game<'_>) -> bool {
-    game.remote
-        .as_ref()
-        .is_none_or(|r| r.session.address == "local")
+    match game.remote.as_ref() {
+        None => true,
+        Some(r) => game.integrated.is_some() && r.session.address == "local",
+    }
+}
+
+fn finite(v: &Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+/// The camera if every number in it is finite.
+fn sane_camera(c: Camera) -> Option<Camera> {
+    let ok = match &c {
+        Camera::Chase(c) => {
+            [c.distance, c.height, c.side, c.wall_blend].iter().all(|v| v.is_finite())
+                && c.wall.as_ref().is_none_or(finite)
+        }
+        Camera::Fixed(f) => finite(&f.at) && finite(&f.look_at),
+    };
+    ok.then_some(c)
+}
+
+/// The pose if every number in it is finite.
+fn sane_pose(p: Pose) -> Option<Pose> {
+    let ok = [p.pitch, p.roll, p.twist].iter().all(|v| v.is_finite())
+        && p.facing.is_none_or(f32::is_finite)
+        && p.shift.as_ref().is_none_or(finite)
+        && p.parts.iter().all(|q| {
+            [q.pitch, q.yaw, q.roll].iter().all(|v| v.is_finite())
+                && q.pivot_y.is_none_or(f32::is_finite)
+                && q.pivot_z.is_none_or(f32::is_finite)
+        });
+    ok.then_some(p)
+}
+
+/// Forgets everything the mod asked for (no mod output, or not our world).
+fn clear(s: &mut Shared) {
+    s.poses = [None, None];
+    s.camera = None;
+    s.safe_fall = false;
+    s.cam_ease = None;
+    s.wall_ease = (0.0, None);
+    s.jolts.clear();
+    s.shake_epoch = None;
 }
 
 /// The first collision box along the unit `dir` from `from` within `reach`:
@@ -139,6 +185,9 @@ fn cast(game: &super::Game<'_>, rays: &[Ray], eye: [f64; 3], feet: [f64; 3]) -> 
         .take(RAY_BUDGET)
         .map(|r| {
             let base = if r.from_eyes { eye } else { feet };
+            if !finite(&r.offset) || [r.offset.x, r.offset.y, r.offset.z].iter().any(|v| v.abs() > 64.0) {
+                return None;
+            }
             let from = [base[0] + r.offset.x, base[1] + r.offset.y, base[2] + r.offset.z];
             let len = dvec(&r.dir).length();
             if !(len > 1e-9) || !r.distance.is_finite() {
@@ -196,6 +245,8 @@ pub fn tick(game: &mut super::Game<'_>) {
         });
     }
     let Some(out) = horizon_dev_reload::tick(&input) else {
+        shared(clear);
+        wind(game, 0.0);
         return;
     };
     for line in &out.chat {
@@ -204,9 +255,13 @@ pub fn tick(game: &mut super::Game<'_>) {
     let current = horizon_dev_reload::current();
     shared(|s| {
         s.safe_fall = local && out.reset_fall;
-        s.poses = [s.poses[1].take(), current.pose.clone().filter(|_| local)];
-        s.camera = current.camera.filter(|_| local);
-        if let Some((strength, seconds)) = out.shake.filter(|_| local) {
+        if !local {
+            clear(s);
+            return;
+        }
+        s.poses = [s.poses[1].take(), current.pose.clone().and_then(sane_pose)];
+        s.camera = current.camera.and_then(sane_camera);
+        if let Some((strength, seconds)) = out.shake.filter(|(a, b)| a.is_finite() && b.is_finite()) {
             s.shake_epoch.get_or_insert_with(Instant::now);
             s.jolts.push((Instant::now(), strength.clamp(0.0, 2.0), seconds.clamp(0.0, 5.0)));
         }
@@ -265,10 +320,11 @@ fn wind(game: &mut super::Game<'_>, volume: f32) {
         }
         None => return,
     };
-    shared(|s| s.wind = Some(id));
+    // Silent: the loop ends on its next tick and is started again when needed.
+    shared(|s| s.wind = (volume > 0.0).then_some(id));
     if let Some(s) = game.audio.engine.instance_mut(id) {
         s.ticking = Ticking::BiomeLoop {
-            fade: (volume * 40.0).round() as i32,
+            fade: if volume > 0.0 { (volume * 40.0).round() as i32 } else { -1 },
             direction: 0,
         };
         s.pitch = 0.9 + volume * 0.6;
@@ -296,18 +352,21 @@ pub fn after_send_state(game: &mut super::Game<'_>) {
     }
 }
 
-/// `/swingmode …` typed in chat goes to the plug, not the server.
-pub fn chat_input(game: &mut super::Game<'_>, message: &str) -> ControlFlow<()> {
-    // Typed chat comes through here and again through `send_chat` on a
-    // server; the control socket's chat only through `send_chat`.
+/// The mod's chat commands (`/swingmode …`) go to the mod, not the server,
+/// in the player's own world only. `typed`: from the chat box (kept in its
+/// history); else a line sent another way (the control socket, a clicked
+/// command), which typed chat also passes through on a server.
+pub fn chat_input(game: &mut super::Game<'_>, message: &str, typed: bool) -> ControlFlow<()> {
     let Some(command) = message.trim().strip_prefix('/') else {
         return ControlFlow::Continue(());
     };
     let (name, args) = command.split_once(' ').unwrap_or((command, ""));
-    if !COMMANDS.contains(&name) || horizon_dev_reload::loads() == 0 {
+    if !COMMANDS.contains(&name) || horizon_dev_reload::loads() == 0 || !local(game) {
         return ControlFlow::Continue(());
     }
-    game.ui.chat.add_recent(message);
+    if typed {
+        game.ui.chat.add_recent(message);
+    }
     shared(|s| s.commands.push((name.to_owned(), args.trim().to_owned())));
     ControlFlow::Break(())
 }
@@ -341,7 +400,11 @@ pub fn rope_geometry(
     let feet = glam::DVec3::new(p.position.x, p.position.y, p.position.z) + lag;
     let hand = feet + glam::DVec3::new(0.0, 1.3, 0.0);
     let light = (15u32 * 16) | ((15u32 * 16) << 8);
-    for rope in ropes.iter().take(4) {
+    for rope in ropes
+        .iter()
+        .filter(|r| finite(&r.to) && r.from.as_ref().is_none_or(finite) && r.progress.is_finite() && r.wave.is_finite())
+        .take(4)
+    {
         let start = rope.from.as_ref().map_or(hand, |f| feet + dvec(f));
         let d = (dvec(&rope.to) - start) * f64::from(rope.progress.clamp(0.0, 1.0));
         let side = d.cross(start - camera).normalize_or_zero();
@@ -425,7 +488,17 @@ pub fn player_model(
     out: &mut Vec<horizon_client::mesher::Vertex>,
 ) -> ControlFlow<()> {
     use horizon_client::mobs::{anim, render};
-    if game.camera_type.first_person() {
+    // Where the game itself would not draw the model (first person, spectator,
+    // invisible), or not our world: the game decides as always.
+    // (The player's effects are kept under bare ids; both spellings checked.)
+    if game.camera_type.first_person()
+        || game.spectator()
+        || ["invisibility", "minecraft:invisibility"]
+            .iter()
+            .any(|id| game.potions.effects.get(*id).is_some())
+        || game.player.as_ref().is_none_or(|p| p.health.dead_or_dying())
+        || !local(game)
+    {
         return ControlFlow::Continue(());
     }
     let (Some(pose), Some(m)) = (frame_pose(alpha as f32), game.player_model.as_ref()) else {
@@ -509,6 +582,11 @@ pub fn player_model(
 /// The wall camera's turn of the whole view (identity off the wall); the
 /// same turn applies to the aim, so the crosshair stays true.
 fn wall_turn(game: &super::Game<'_>) -> glam::DQuat {
+    // Without the whole-view turn (a shipped mod can't set it), the view is
+    // not turned either: half a turn would unhinge the mouse and the aim.
+    if !horizon_dev_reload::frame::WALL_TURN {
+        return glam::DQuat::IDENTITY;
+    }
     let camera = shared(|s| s.camera);
     match camera {
         Some(Camera::Chase(c)) if !game.camera_type.first_person() => {
@@ -518,6 +596,7 @@ fn wall_turn(game: &super::Game<'_>) -> glam::DQuat {
                 let dt = then.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
                 let want = f64::from(c.wall_blend.clamp(0.0, 1.0));
                 let k = cur + (want - cur) * (1.0 - (-8.0_f64 * dt).exp());
+                let k = if k.is_finite() { k } else { 0.0 };
                 s.wall_ease = (k, Some(now));
                 match &c.wall {
                     Some(w) if k > 1e-3 => {
@@ -574,7 +653,7 @@ pub fn camera_view(
         let pitch = (-d.y.clamp(-1.0, 1.0)).asin().to_degrees() as f32;
         (from, yaw, pitch)
     };
-    let Some(camera) = shared(|s| s.camera) else {
+    let Some(camera) = shared(|s| s.camera).filter(|_| local(game)) else {
         return ControlFlow::Continue(());
     };
     let Some(p) = game.player.as_ref() else {
@@ -657,6 +736,11 @@ pub fn camera_view(
                         (ease(back, want_back, rate), ease(side, want_side, 4.0))
                     }
                     None => (want_back, want_side),
+                };
+                let eased = if eased.0.is_finite() && eased.1.is_finite() {
+                    eased
+                } else {
+                    (want_back, want_side)
                 };
                 s.cam_ease = Some((eased.0, eased.1, now));
                 eased
