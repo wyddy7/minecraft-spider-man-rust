@@ -494,9 +494,13 @@ pub fn player_model(
     use horizon_client::mobs::{anim, render};
     // Where the game itself would not draw the model (first person, spectator,
     // invisible), or not our world: the game decides as always.
+    // (The player's effects are kept under bare ids; both spellings checked.)
     if game.camera_type.first_person()
         || game.spectator()
-        || game.potions.effects.get("minecraft:invisibility").is_some()
+        || ["invisibility", "minecraft:invisibility"]
+            .iter()
+            .any(|id| game.potions.effects.get(*id).is_some())
+        || game.player.as_ref().is_none_or(|p| p.health.dead_or_dying())
         || !local(game)
     {
         return ControlFlow::Continue(());
@@ -940,6 +944,27 @@ pub mod horizon_dev_reload {
 
     }
 
+    thread_local! {
+        static IN_MOD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// The game's panic hook reports a crash (log, report file, upload) at
+    /// the panic itself, before the catch: a panic inside the mod's tick is
+    /// only logged as the mod's, so a later real crash still gets reported.
+    fn quiet_mod_panics() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let game_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if IN_MOD.get() {
+                    eprintln!("[spider-man] the mod panicked and starts over: {info}");
+                } else {
+                    game_hook(info);
+                }
+            }));
+        });
+    }
+
     static CURRENT: std::sync::Mutex<abi::Current> = std::sync::Mutex::new(abi::Current {
         rays: Vec::new(),
         ropes: Vec::new(),
@@ -952,11 +977,17 @@ pub mod horizon_dev_reload {
     /// One tick of the mod; None if it panicked (it then starts over and the
     /// game forgets its requests), so a bug in the mod never takes the game down.
     pub fn tick(input: &abi::Input) -> Option<abi::Output> {
+        quiet_mod_panics();
+        IN_MOD.set(true);
         let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::game::spider_man::spiderman::plug_tick(input)
         }));
+        IN_MOD.set(false);
         let Ok(out) = out else {
             crate::game::spider_man::spiderman::plug_reset();
+            if let Ok(mut current) = CURRENT.lock() {
+                *current = abi::Current::default();
+            }
             return None;
         };
         if let Ok(mut current) = CURRENT.lock() {
@@ -1403,7 +1434,7 @@ pub mod spiderman {
             pub eye: V,
             /// Unit view vector, turned with the wall camera.
             pub look: V,
-            /// The crosshair's ray, and it turned left and right for a pair of hooks.
+            /// The crosshair's ray.
             pub aim: Probe,
             /// Rays above and ahead of the player for picking a swing anchor.
             pub fan: Vec<Probe>,
@@ -2463,9 +2494,11 @@ pub mod spiderman {
             }
 
             pub fn reset(&mut self) {
-                let jump_start = self.jump_start;
+                // The settings survive a reset; the rest starts over.
+                let (jump_start, web_delay) = (self.jump_start, self.web_delay);
                 *self = Spidey::default();
                 self.jump_start = jump_start;
+                self.web_delay = web_delay;
                 motion::clear_pose();
             }
 

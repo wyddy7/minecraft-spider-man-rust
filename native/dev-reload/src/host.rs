@@ -130,7 +130,10 @@ pub fn tick(input: &Input) -> Option<Output> {
     let out: Output = match serde_json::from_slice(&answer) {
         Ok(out) => out,
         Err(error) => {
+            // A panic in the plug (it starts over) or a broken build: forget
+            // what it asked for, so no pose or rope stays frozen.
             eprintln!("[dev-reload] unreadable output: {error}");
+            host.current = Current::default();
             return None;
         }
     };

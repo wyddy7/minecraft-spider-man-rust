@@ -4,7 +4,7 @@ version = "0.1.0"
 priority = 100
 
 [compatibility]
-horizon_revision = "e063d6e27cbc851d9e92d477c752404ca3f106cb"
+horizon_revision = "981bbd68264981dbea23f6e03659abd08a7563ac"
 
 [[module]]
 id = "socket"

@@ -490,9 +490,13 @@ pub fn player_model(
     use horizon_client::mobs::{anim, render};
     // Where the game itself would not draw the model (first person, spectator,
     // invisible), or not our world: the game decides as always.
+    // (The player's effects are kept under bare ids; both spellings checked.)
     if game.camera_type.first_person()
         || game.spectator()
-        || game.potions.effects.get("minecraft:invisibility").is_some()
+        || ["invisibility", "minecraft:invisibility"]
+            .iter()
+            .any(|id| game.potions.effects.get(*id).is_some())
+        || game.player.as_ref().is_none_or(|p| p.health.dead_or_dying())
         || !local(game)
     {
         return ControlFlow::Continue(());

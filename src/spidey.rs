@@ -912,9 +912,11 @@ impl Spidey {
     }
 
     pub fn reset(&mut self) {
-        let jump_start = self.jump_start;
+        // The settings survive a reset; the rest starts over.
+        let (jump_start, web_delay) = (self.jump_start, self.web_delay);
         *self = Spidey::default();
         self.jump_start = jump_start;
+        self.web_delay = web_delay;
         motion::clear_pose();
     }
 

@@ -52,7 +52,7 @@ pub struct Sense {
     pub eye: V,
     /// Unit view vector, turned with the wall camera.
     pub look: V,
-    /// The crosshair's ray, and it turned left and right for a pair of hooks.
+    /// The crosshair's ray.
     pub aim: Probe,
     /// Rays above and ahead of the player for picking a swing anchor.
     pub fan: Vec<Probe>,
