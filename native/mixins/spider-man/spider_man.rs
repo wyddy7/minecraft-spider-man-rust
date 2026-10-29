@@ -662,7 +662,10 @@ fn steer(game: &mut super::Game<'_>, turn: glam::DQuat, wall: Option<glam::DVec3
     let id = glam::DQuat::IDENTITY;
     if let Some(prev) = prev.filter(|p| p.angle_between(turn) > 1e-6 && turn.angle_between(id) > p.angle_between(id)) {
         let world = prev * glam::DVec3::from_array(super::view_vector(game.yaw, game.pitch));
-        (game.yaw, game.pitch) = view_angles(turn.inverse() * world);
+        let (yaw, pitch) = view_angles(turn.inverse() * world);
+        // By the short way: the game's yaw runs past ±180.
+        game.yaw += (yaw - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
+        game.pitch = pitch;
     }
     let turned = turn.angle_between(glam::DQuat::IDENTITY) > 1e-4;
     if let (true, Some(w), Some(p)) = (turned, wall, game.player.as_ref()) {
@@ -1923,6 +1926,7 @@ pub mod spiderman {
         const OVERHANG_OUT_TICKS: u32 = 10;
         const OVERHANG_OUT: f64 = 0.3;
         const OVERHANG_UP: f64 = 0.85;
+        const OVERHANG_REATTACH: u32 = 15;
         const LEDGE_UP: f64 = 0.55;
 
         /// R held from the ground fires the web once off it: on a jump, or with
@@ -1979,6 +1983,9 @@ pub mod spiderman {
             /// and the way out from under it: the wall, ticks gone.
             wall_blocked: u32,
             overhang: Option<(P, u32)>,
+            /// Ticks after an overhang in which the wall above is caught without R
+            /// (a walk under a balcony must not end in a fall).
+            reattach: u32,
             /// Sprint on the wall: W last tick, the tick of the last W press, latched.
             w_was: bool,
             w_last: u32,
@@ -2055,6 +2062,7 @@ pub mod spiderman {
                     wall_space: false,
                     wall_blocked: 0,
                     overhang: None,
+                    reattach: 0,
                     run_twist: 0.0,
                     w_was: false,
                     w_last: 0,
@@ -2470,6 +2478,8 @@ pub mod spiderman {
                     return None;
                 }
                 let wall = state.wall.as_ref().map(P::of);
+                let reattach = self.reattach > 0;
+                self.reattach = self.reattach.saturating_sub(1);
                 // Out from under an overhang, level, then up past its lip; the wall
                 // run catches the wall above it on its own.
                 if let Some((w, t)) = self.overhang {
@@ -2479,6 +2489,7 @@ pub mod spiderman {
                         return Some(w * -OVERHANG_OUT + UP * web::FALL);
                     }
                     self.overhang = None;
+                    self.reattach = OVERHANG_REATTACH;
                     return Some(w * (OVERHANG_OUT * 0.3) + UP * OVERHANG_UP);
                 }
                 if let Phase::Slap(w, t) = self.phase {
@@ -2544,7 +2555,8 @@ pub mod spiderman {
                         let n = w * -1.0;
                         let held = ["KeyW", "KeyA", "KeyS", "KeyD"].iter().any(|k| key(state, k));
                         let (ahead_w, right_w) = match self.wall_keys {
-                            Some((kw, a, r)) if held && kw.dot(w) > 0.99 => (a, r),
+                            // Only while the camera turns: upright, the mouse steers.
+                            Some((kw, a, r)) if held && self.cam_blend > 0.0 && kw.dot(w) > 0.99 => (a, r),
                             _ => {
                                 let flat_look = look - n * look.dot(n);
                                 let a = if flat_look.len() > 0.3 { flat_look.norm() } else { UP };
@@ -2594,7 +2606,7 @@ pub mod spiderman {
                 // must stay a jump).
                 let starts = !state.on_ground
                     && self.driving
-                    && key(state, "KeyR")
+                    && (key(state, "KeyR") || reattach)
                     && self.zip.is_none()
                     && look.flat().norm().dot(w) > 0.4
                     && (v.dot(w) > 0.05 || key(state, "KeyW"));
@@ -2606,6 +2618,9 @@ pub mod spiderman {
                 self.safe = true;
                 self.phase = Phase::WallRun(w);
                 self.r_held = true;
+                self.reattach = 0;
+                self.wall_blocked = 0;
+                self.wall_keys = None;
                 // A Space held into the run is not a kick.
                 self.wall_space = key(state, "Space");
                 self.run_twist = 0.0;
@@ -2650,7 +2665,8 @@ pub mod spiderman {
             /// window ledge, the last floors) never turns it back and forth.
             pub fn wall_camera(&mut self, state: &Sense) -> (Option<P>, f32) {
                 // Out from under an overhang is still on the wall.
-                let on_wall = matches!(self.phase, Phase::WallRun(_)) || (self.overhang.is_some() && self.cam_long.is_some());
+                let on_wall = matches!(self.phase, Phase::WallRun(_))
+                    || ((self.overhang.is_some() || self.reattach > 0) && self.cam_long.is_some());
                 if !on_wall {
                     self.cam_long = None;
                 } else if self.cam_long.is_none() {

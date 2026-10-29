@@ -658,7 +658,10 @@ fn steer(game: &mut super::Game<'_>, turn: glam::DQuat, wall: Option<glam::DVec3
     let id = glam::DQuat::IDENTITY;
     if let Some(prev) = prev.filter(|p| p.angle_between(turn) > 1e-6 && turn.angle_between(id) > p.angle_between(id)) {
         let world = prev * glam::DVec3::from_array(super::view_vector(game.yaw, game.pitch));
-        (game.yaw, game.pitch) = view_angles(turn.inverse() * world);
+        let (yaw, pitch) = view_angles(turn.inverse() * world);
+        // By the short way: the game's yaw runs past ±180.
+        game.yaw += (yaw - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
+        game.pitch = pitch;
     }
     let turned = turn.angle_between(glam::DQuat::IDENTITY) > 1e-4;
     if let (true, Some(w), Some(p)) = (turned, wall, game.player.as_ref()) {
