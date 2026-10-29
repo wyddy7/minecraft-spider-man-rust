@@ -499,7 +499,7 @@ impl Mod for Swing {
         if args.trim() == "debug" {
             let st = self.sense.as_ref();
             return Ok(Some(format!(
-                "aim {:?} fan {} wall {:?} above {:?} phase-wallrun {} blend {:.2} posed {} profile {:?} last vault {}",
+                "aim {:?} fan {} wall {:?} above {:?} phase-wallrun {} blend {:.2} posed {} webs {} profile {:?} last vault {}",
                 st.and_then(|s| s.aim.hit.as_ref().map(|h| ((P::of(h) - P::of(&s.eye)).len() * 10.0).round() / 10.0)),
                 st.map_or(0, |s| s.fan.iter().filter(|p| p.hit.is_some()).count()),
                 st.and_then(|s| s.wall.as_ref().map(|w| (w.x, w.z))),
@@ -507,6 +507,7 @@ impl Mod for Swing {
                 self.spidey.wall_running(),
                 self.spidey.cam_blend(),
                 self.spidey.posed(),
+                self.spidey.webs,
                 st.map(|s| s.profile.iter().map(|h| h.map_or(-9.0, |h| (h * 10.0).round() / 10.0)).collect::<Vec<_>>()),
                 self.spidey.vault_note
             )));

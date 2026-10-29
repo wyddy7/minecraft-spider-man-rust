@@ -1829,9 +1829,11 @@ pub mod spiderman {
         const LEDGE_OVER: f64 = 0.45;
         const LEDGE_UP: f64 = 0.55;
 
-        /// The jump into a swing from the ground: up and forward.
-        const JUMP_UP: f64 = 0.6;
-        const JUMP_FORWARD: f64 = 0.25;
+        /// R held from the ground fires the web once off it: on a jump, or with
+        /// more than this many blocks below the feet (a curb or a hop is less).
+        const ARM_DROP: f64 = 2.5;
+        /// A web shot within this many blocks of the ground gets the low arc.
+        const GROUND_ARC: f64 = 3.0;
         /// When a web shot from the ground bites: a pull along it.
         const GROUND_TUG: f64 = 0.7;
         /// From the ground: the arc's bottom this far above the chest (a negative
@@ -1857,6 +1859,10 @@ pub mod spiderman {
             web: Option<Web>,
             zip: Option<P>,
             r_held: bool,
+            /// R held from the ground: the web goes once you are off it.
+            web_armed: bool,
+            /// Off the ground by a jump (Space), not a step off an edge.
+            jumped: bool,
             z_held: bool,
             phase: Phase,
             /// From the first web until the feet touch the ground: the mod drives.
@@ -1909,6 +1915,8 @@ pub mod spiderman {
             pub safe: bool,
             /// A vault over an obstacle on the ground, under way.
             vault: Option<Vault>,
+            /// Webs shot so far, for `/swingmode debug`.
+            pub webs: u32,
             /// The last vault picked, for `/swingmode debug`.
             pub vault_note: String,
             /// Ticks a held pose has been easing out on the ground.
@@ -1928,6 +1936,8 @@ pub mod spiderman {
                     web: None,
                     zip: None,
                     r_held: false,
+                    web_armed: false,
+                    jumped: false,
                     z_held: false,
                     phase: Phase::Ground,
                     driving: false,
@@ -1961,6 +1971,7 @@ pub mod spiderman {
                     zip_walled: false,
                     safe: false,
                     vault: None,
+                    webs: 0,
                     vault_note: String::new(),
                     ease_out: 0,
                 }
@@ -2057,9 +2068,10 @@ pub mod spiderman {
                 if !state.on_ground {
                     return None;
                 }
-                // A block at the feet or knees ahead within ~4 ticks: hop it.
+                // A block at the feet or knees ahead within ~4 ticks: hop it, if R
+                // (the parkour run) is held.
                 let near = |i: usize| state.ahead.get(i).copied().flatten().is_some_and(|d| d / speed.max(0.1) < 4.0);
-                if near(1) && !near(3) {
+                if key(state, "KeyR") && near(1) && !near(3) {
                     v = v + UP * ROOF_HOP;
                 }
                 if key(state, "Space") {
@@ -2119,10 +2131,10 @@ pub mod spiderman {
                 if self.web.is_some() || self.zip.is_some() || !key(state, "KeyW") {
                     return;
                 }
-                // W held is the intent: walking, running, or pressed against the
-                // face from a stop; sneaking never vaults.
-                // R held is the wall run's (or a web's): no vault then.
-                if key(state, "ShiftLeft") || key(state, "KeyR") || state.profile.is_empty() || look.flat().len() < 0.1 {
+                // R held (PS4's R2) is the parkour run, W the direction: walking,
+                // running, or pressed against the face from a stop. Without R the
+                // ground is vanilla (doors, steps); sneaking never vaults.
+                if !key(state, "KeyR") || key(state, "ShiftLeft") || state.profile.is_empty() || look.flat().len() < 0.1 {
                     return;
                 }
                 let v = P::of(&state.velocity);
@@ -2529,12 +2541,33 @@ pub mod spiderman {
                 let look = P::of(&state.look);
                 let ahead = look.flat().norm();
                 let side = axis(state, "KeyD") - axis(state, "KeyA");
-                // R: shoot on press, let go on release.
+                // R (PS4's R2): in the air it shoots, let go on release; on the
+                // ground it is the parkour run and shoots nothing. Held from the
+                // ground, the web goes once you are off it: a jump, or off an edge
+                // with a real drop below (not a curb, a hop or a vault).
                 let r = key(state, "KeyR");
                 // No web from a wall: R there was firing one at once (playtest).
                 let on_wall = matches!(self.phase, Phase::WallRun(_) | Phase::Slap(..));
-                if r && !self.r_held && !on_wall {
+                let pressed = r && !self.r_held;
+                self.web_armed = r && !on_wall && (self.web_armed || pressed || state.on_ground);
+                // A jump: Space on the ground (a quick tap is up before the feet
+                // leave it, so it is remembered until the landing).
+                if state.on_ground {
+                    self.jumped = key(state, "Space") || self.space_was;
+                }
+                let drop = state.floor.map_or(f64::INFINITY, |f| chest.y - super::CHEST - f);
+                let off = !state.on_ground
+                    && self.vault.is_none()
+                    && !matches!(self.phase, Phase::Vault(..))
+                    && self.web.is_none()
+                    && self.zip.is_none()
+                    && (self.jumped || drop > ARM_DROP);
+                let fire = !state.on_ground && !on_wall && ((pressed && self.vault.is_none()) || (self.web_armed && off));
+                if fire {
+                    // Nothing in reach: still armed, tried again next tick.
                     if let Some(anchor) = pick_anchor(state, chest, side) {
+                        self.web_armed = false;
+                        self.webs += 1;
                         let length = (anchor - chest).len();
                         let flight = flight_ticks((length / WEB_SPEED).clamp(2.0, MAX_FLIGHT), self.web_delay);
                         // Swing down the middle of the street (PS4: the arc is bent to
@@ -2561,10 +2594,9 @@ pub mod spiderman {
                         });
                         self.zip = None;
                         self.driving = true;
-                        // On the ground: jump into the swing (PS4's start of a swing,
-                        // as on PS4; `/swingmode jump off` turns it off).
-                        if state.on_ground && self.jump_start {
-                            v = v.flat() + ahead * JUMP_FORWARD + UP * JUMP_UP;
+                        // Just off the ground: a low arc that lifts you (PS4: the web
+                        // is shorter near the ground).
+                        if drop < GROUND_ARC {
                             self.ground_start = true;
                         }
                     }
@@ -3696,7 +3728,7 @@ pub mod spiderman {
             if args.trim() == "debug" {
                 let st = self.sense.as_ref();
                 return Ok(Some(format!(
-                    "aim {:?} fan {} wall {:?} above {:?} phase-wallrun {} blend {:.2} posed {} profile {:?} last vault {}",
+                    "aim {:?} fan {} wall {:?} above {:?} phase-wallrun {} blend {:.2} posed {} webs {} profile {:?} last vault {}",
                     st.and_then(|s| s.aim.hit.as_ref().map(|h| ((P::of(h) - P::of(&s.eye)).len() * 10.0).round() / 10.0)),
                     st.map_or(0, |s| s.fan.iter().filter(|p| p.hit.is_some()).count()),
                     st.and_then(|s| s.wall.as_ref().map(|w| (w.x, w.z))),
@@ -3704,6 +3736,7 @@ pub mod spiderman {
                     self.spidey.wall_running(),
                     self.spidey.cam_blend(),
                     self.spidey.posed(),
+                    self.spidey.webs,
                     st.map(|s| s.profile.iter().map(|h| h.map_or(-9.0, |h| (h * 10.0).round() / 10.0)).collect::<Vec<_>>()),
                     self.spidey.vault_note
                 )));
