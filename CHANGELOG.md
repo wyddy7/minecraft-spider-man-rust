@@ -13,9 +13,10 @@
   The ground jump-into-swing and its setting (`/swingmode jump`) are gone.
 - On a wall R held runs too (no double W press); a run up into an overhang or a terrace floor goes out from under
   it and up past its lip instead of sticking.
-- Wall camera (development build only): the wall-as-floor turn is decided as you land on a wall and held until you
-  leave it; keys held on the wall keep their direction while the camera turns; a mouse left alone lets the view drift
-  behind the run, as in Web of Shadows.
+- Wall camera (development build only), after Catlike Coding's orbit camera: the wall-as-floor turn is decided as you
+  land on a wall and held until you leave it, eased at a capped speed; the view is built from the mouse angles (no
+  jumps looking straight up or down); on a turned wall W goes where the view points along it, on a low wall W goes up;
+  a mouse left alone lets the view settle behind the run, a little above the back.
 
 ## 0.1.0 — 2026-10-28
 
