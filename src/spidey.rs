@@ -257,8 +257,6 @@ const GROUND_DROP: f64 = -1.5;
 const GROUND_TUG_MAX: f64 = 0.8;
 
 pub struct Spidey {
-    /// Jump into a swing when R is pressed on the ground.
-    pub jump_start: bool,
     /// How long a web or a zip line flies before it bites, as a share of
     /// its natural flight (`/swingmode delay`): 1 = the reference's 6–8
     /// frames, 0 = it bites on the next tick. Default half: Spider-Man 2
@@ -341,7 +339,6 @@ pub struct Spidey {
 impl Default for Spidey {
     fn default() -> Self {
         Spidey {
-            jump_start: true,
             web_delay: 0.5,
             impact: 0.0,
             cam_wall: None,
@@ -925,9 +922,8 @@ impl Spidey {
 
     pub fn reset(&mut self) {
         // The settings survive a reset; the rest starts over.
-        let (jump_start, web_delay) = (self.jump_start, self.web_delay);
+        let web_delay = self.web_delay;
         *self = Spidey::default();
-        self.jump_start = jump_start;
         self.web_delay = web_delay;
         motion::clear_pose();
     }
@@ -959,7 +955,8 @@ impl Spidey {
         // R (PS4's R2): in the air it shoots, let go on release; on the
         // ground it is the parkour run and shoots nothing. Held from the
         // ground, the web goes once you are off it: a jump, or off an edge
-        // with a real drop below (not a curb, a hop or a vault).
+        // with a real drop below and falling (not a curb, a hop, a vault
+        // or a ladder climbed).
         let r = key(state, "KeyR");
         // No web from a wall: R there was firing one at once (playtest).
         let on_wall = matches!(self.phase, Phase::WallRun(_) | Phase::Slap(..));
@@ -980,7 +977,7 @@ impl Spidey {
             && !matches!(self.phase, Phase::Vault(..))
             && self.web.is_none()
             && self.zip.is_none()
-            && (self.jumped || drop > ARM_DROP);
+            && (self.jumped || (drop > ARM_DROP && state.velocity.y < 0.0));
         let fire = !state.on_ground && !on_wall && ((pressed && self.vault.is_none()) || (self.web_armed && off));
         if fire {
             // Nothing in reach: still armed, tried again next tick.
@@ -1219,9 +1216,6 @@ impl Spidey {
                     // Started from the ground: the web lifts you off it.
                     v = v + (w.pivot - chest).norm() * GROUND_TUG;
                     self.ground_start = false;
-                }
-                if w.flying == 0 && state.on_ground && !self.jump_start {
-                    v = v + v.flat().norm() * web::ATTACH_KICK + UP * 0.3;
                 }
                 v = v * web::DAMP - UP * web::FALL;
             } else {

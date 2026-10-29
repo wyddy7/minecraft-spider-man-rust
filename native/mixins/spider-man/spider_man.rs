@@ -1842,8 +1842,6 @@ pub mod spiderman {
         const GROUND_TUG_MAX: f64 = 0.8;
 
         pub struct Spidey {
-            /// Jump into a swing when R is pressed on the ground.
-            pub jump_start: bool,
             /// How long a web or a zip line flies before it bites, as a share of
             /// its natural flight (`/swingmode delay`): 1 = the reference's 6–8
             /// frames, 0 = it bites on the next tick. Default half: Spider-Man 2
@@ -1926,7 +1924,6 @@ pub mod spiderman {
         impl Default for Spidey {
             fn default() -> Self {
                 Spidey {
-                    jump_start: true,
                     web_delay: 0.5,
                     impact: 0.0,
                     cam_wall: None,
@@ -2510,9 +2507,8 @@ pub mod spiderman {
 
             pub fn reset(&mut self) {
                 // The settings survive a reset; the rest starts over.
-                let (jump_start, web_delay) = (self.jump_start, self.web_delay);
+                let web_delay = self.web_delay;
                 *self = Spidey::default();
-                self.jump_start = jump_start;
                 self.web_delay = web_delay;
                 motion::clear_pose();
             }
@@ -2544,7 +2540,8 @@ pub mod spiderman {
                 // R (PS4's R2): in the air it shoots, let go on release; on the
                 // ground it is the parkour run and shoots nothing. Held from the
                 // ground, the web goes once you are off it: a jump, or off an edge
-                // with a real drop below (not a curb, a hop or a vault).
+                // with a real drop below and falling (not a curb, a hop, a vault
+                // or a ladder climbed).
                 let r = key(state, "KeyR");
                 // No web from a wall: R there was firing one at once (playtest).
                 let on_wall = matches!(self.phase, Phase::WallRun(_) | Phase::Slap(..));
@@ -2565,7 +2562,7 @@ pub mod spiderman {
                     && !matches!(self.phase, Phase::Vault(..))
                     && self.web.is_none()
                     && self.zip.is_none()
-                    && (self.jumped || drop > ARM_DROP);
+                    && (self.jumped || (drop > ARM_DROP && state.velocity.y < 0.0));
                 let fire = !state.on_ground && !on_wall && ((pressed && self.vault.is_none()) || (self.web_armed && off));
                 if fire {
                     // Nothing in reach: still armed, tried again next tick.
@@ -2804,9 +2801,6 @@ pub mod spiderman {
                             // Started from the ground: the web lifts you off it.
                             v = v + (w.pivot - chest).norm() * GROUND_TUG;
                             self.ground_start = false;
-                        }
-                        if w.flying == 0 && state.on_ground && !self.jump_start {
-                            v = v + v.flat().norm() * web::ATTACH_KICK + UP * 0.3;
                         }
                         v = v * web::DAMP - UP * web::FALL;
                     } else {
@@ -3377,7 +3371,6 @@ pub mod spiderman {
         /// With no A/D, this share of the speed across the view is taken off
         /// each tick: the arc runs straight down the street.
         pub const STRAIGHTEN: f64 = 0.06;
-        pub const ATTACH_KICK: f64 = 0.12;
         pub const RELEASE_FORWARD: f64 = 0.22;
         pub const RELEASE_UP: f64 = 0.26;
         pub const RELEASE_UP_FALLING: f64 = 0.12;
@@ -3431,7 +3424,6 @@ pub mod spiderman {
     const SETTINGS: &str = "settings";
     const DELAY_STEPS: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
     const BUTTON_DELAY: u32 = 1;
-    const BUTTON_JUMP: u32 = 2;
 
     thread_local! {
         /// What is held this tick, by the names above: the mod's keys from
@@ -3514,7 +3506,6 @@ pub mod spiderman {
                             self.spidey.web_delay = d.clamp(0.0, 2.0);
                         }
                     }
-                    Some(("jump", v)) => self.spidey.jump_start = v.trim() != "off",
                     _ => {}
                 }
             }
@@ -3522,9 +3513,8 @@ pub mod spiderman {
 
         fn save_settings(&self) {
             let text = format!(
-                "delay={}\njump={}\n",
-                self.spidey.web_delay,
-                if self.spidey.jump_start { "on" } else { "off" }
+                "delay={}\n",
+                self.spidey.web_delay
             );
             if let Err(e) = storage::set(SETTINGS, text.as_bytes()) {
                 crate::game::spider_man::horizon_mod_sdk::log::write(crate::game::spider_man::horizon_mod_sdk::log::Level::Warn, &e);
@@ -3547,13 +3537,6 @@ pub mod spiderman {
                     format!("Web delay: {:.2}", self.spidey.web_delay),
                 ),
                 text(10, "How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once."),
-                button(
-                    BUTTON_JUMP,
-                    format!(
-                        "Jump into a swing from the ground: {}",
-                        if self.spidey.jump_start { "On" } else { "Off" }
-                    ),
-                ),
             ]);
         }
 
@@ -3692,7 +3675,6 @@ pub mod spiderman {
                         .find(|d| *d > now + 1e-6)
                         .unwrap_or(DELAY_STEPS[0]);
                 }
-                BUTTON_JUMP => self.spidey.jump_start = !self.spidey.jump_start,
                 _ => return,
             }
             self.save_settings();
@@ -3765,30 +3747,18 @@ pub mod spiderman {
                     self.spidey.web_delay
                 )));
             }
-            if let Some(rest) = args.trim().strip_prefix("jump") {
-                self.spidey.jump_start = match rest.trim() {
-                    "on" | "" => true,
-                    "off" => false,
-                    other => return Err(format!("/swingmode jump on|off, not {other}")),
-                };
-                self.save_settings();
-                return Ok(Some(format!(
-                    "Jump into a swing from the ground: {}",
-                    if self.spidey.jump_start { "on" } else { "off" }
-                )));
-            }
-            // The commands mirror the settings (`delay`, `jump`) plus ones with no
+            // The commands mirror the settings (`delay`) plus ones with no
             // button (`view`, `pose`, `debug`); `on`/`off` switch the mod.
             self.mode = match args.trim() {
                 "on" | "web" => Mode::Web,
                 "off" => Mode::Off,
                 "" => {
                     return Ok(Some(
-                        "/swingmode on|off · delay 0..2 · jump on|off (the settings page's) · view side|front|back|off · debug"
+                        "/swingmode on|off · delay 0..2 · view side|front|back|off · debug"
                             .into(),
                     ));
                 }
-                other => return Err(format!("/swingmode on|off|delay|jump|view|debug, not {other}")),
+                other => return Err(format!("/swingmode on|off|delay|view|debug, not {other}")),
             };
             self.last_chest = None;
             self.spidey.reset();

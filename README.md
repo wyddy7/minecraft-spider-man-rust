@@ -46,9 +46,9 @@ whatever version you play otherwise, in an instance of its own. More in
 A chase camera follows the swing and shakes at speed; the wind gets louder the faster you go. Falls from a swing
 don't hurt.
 
-Chat: `/swingmode on|off` switches the mod; `delay 0..2` (how long a web flies before it bites, 0.5 by default) and
-`jump on|off` (jumping into a swing from the ground) are its settings, kept between games; `view side|front|back|off`
-gives a fixed camera for looking at the poses; `debug` prints what the mod sees.
+Chat: `/swingmode on|off` switches the mod; `delay 0..2` (how long a web flies before it bites, 0.5 by default) is its
+setting, kept between games; `view side|front|back|off` gives a fixed camera for looking at the poses; `debug` prints
+what the mod sees.
 
 It plays in single player and in a LAN world you host. On someone else's server it does nothing: it only moves the
 player where the server is yours. A city map makes the most of it; for the look, any Spider-Man skin.
@@ -121,7 +121,7 @@ cd ../horizon
 ```
 
 On that build R and Z are in Options › Controls › Key Binds under "Spider-Man", and Options › Mods › Spider-Man ›
-Settings has the web delay and the jump.
+Settings has the web delay.
 
 ## How it works
 

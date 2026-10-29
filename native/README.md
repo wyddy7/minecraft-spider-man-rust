@@ -34,7 +34,7 @@ bounded, and a panic in the mod skips its tick (it starts over) instead of crash
 - No wall-as-floor roll in the shipped bundle: the turned view needs state shared between Horizon's game and
   its library crate, which a native bundle can't add. The dev build has it.
 - While posed, the player model is drawn without armour, the held item or elytra.
-- Keys are fixed (R web, Z zip), no Controls rows; no settings page yet (`/swingmode delay|jump` set the same
+- Keys are fixed (R web, Z zip), no Controls rows; no settings page yet (`/swingmode delay` sets the same
   things); the help shows in chat, not a HUD panel. The settings file is `mod-storage/spider-man/` in the game's
   folder.
 
