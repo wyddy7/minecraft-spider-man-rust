@@ -146,7 +146,7 @@ struct Web {
     held: u32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Phase {
     Ground,
     Air,
@@ -250,6 +250,15 @@ const STRIDE_MAX_STEP: f32 = 0.95;
 const WALL_KICK: f64 = 0.7;
 const WALL_KICK_UP: f64 = 0.45;
 const LEDGE_OVER: f64 = 0.45;
+/// Climbing into an overhang (a ledge or a slab over the head while the wall
+/// goes on, or a terrace floor jutting out under the roof): this many ticks
+/// pressed up against it, then out from the wall for `OVERHANG_OUT_TICKS` at
+/// `OVERHANG_OUT` a tick, level (past a lip up to ~2 blocks deep; NYC's tower
+/// terrace at -641 93 -88 is 2), then up past it and back in over it.
+const OVERHANG_TICKS: u32 = 4;
+const OVERHANG_OUT_TICKS: u32 = 10;
+const OVERHANG_OUT: f64 = 0.3;
+const OVERHANG_UP: f64 = 0.85;
 const LEDGE_UP: f64 = 0.55;
 
 /// R held from the ground fires the web once off it: on a jump, or with
@@ -297,6 +306,10 @@ pub struct Spidey {
     /// Space last tick on the wall, and the body's turn toward its run.
     wall_space: bool,
     run_twist: f32,
+    /// Ticks the wall run has pushed up against something over the head,
+    /// and the way out from under it: the wall, ticks gone.
+    wall_blocked: u32,
+    overhang: Option<(P, u32)>,
     /// Sprint on the wall: W last tick, the tick of the last W press, latched.
     w_was: bool,
     w_last: u32,
@@ -369,6 +382,8 @@ impl Default for Spidey {
             asked: None,
             climb: 0.0,
             wall_space: false,
+            wall_blocked: 0,
+            overhang: None,
             run_twist: 0.0,
             w_was: false,
             w_last: 0,
@@ -784,6 +799,17 @@ impl Spidey {
             return None;
         }
         let wall = state.wall.as_ref().map(P::of);
+        // Out from under an overhang, level, then up past its lip; the wall
+        // run catches the wall above it on its own.
+        if let Some((w, t)) = self.overhang {
+            if t < OVERHANG_OUT_TICKS {
+                self.overhang = Some((w, t + 1));
+                // Level: what gravity takes off is given back.
+                return Some(w * -OVERHANG_OUT + UP * web::FALL);
+            }
+            self.overhang = None;
+            return Some(w * (OVERHANG_OUT * 0.3) + UP * OVERHANG_UP);
+        }
         if let Phase::Slap(w, t) = self.phase {
             self.r_held = key(state, "KeyR");
             if t >= SLAP_STICK + SLAP_SLIDE || wall.is_none() {
@@ -808,6 +834,19 @@ impl Spidey {
                     return Some(w * -WALL_KICK + UP * WALL_KICK_UP);
                 }
                 let along = w.cross(UP).norm();
+                // Up against an overhang: the run asks up, the move made
+                // (`v`, the chest's step) gives nothing; out around its lip
+                // and on up the wall above.
+                if self.wall_vel.y > 0.1 && v.y < 0.02 {
+                    self.wall_blocked += 1;
+                } else {
+                    self.wall_blocked = 0;
+                }
+                if self.wall_blocked >= OVERHANG_TICKS {
+                    self.wall_blocked = 0;
+                    self.overhang = Some((w, 0));
+                    self.phase = Phase::Flip(0);
+                }
                 // On the wall WASD walk it as a floor (Web of Shadows): W up,
                 // S down, A/D along; nothing held clings. R held runs, as on
                 // the ground (PS4's R2): faster, and up with no key; letting
@@ -946,6 +985,18 @@ impl Spidey {
     /// Parts the mod still poses (0: the game's own animation).
     pub fn posed(&self) -> usize {
         self.shown.len()
+    }
+
+    /// The movement state for `/swingmode debug`.
+    pub fn note(&self) -> String {
+        format!(
+            "{:?} vault {} wall_vel {:.2} blocked {} driving {}",
+            self.phase,
+            self.vault.is_some(),
+            self.wall_vel.y,
+            self.wall_blocked,
+            self.driving
+        )
     }
 
     pub fn wall_running(&self) -> bool {
