@@ -673,7 +673,7 @@ fn orbit(yaw: f32, pitch: f32) -> glam::DQuat {
 /// turn behind the run, measured in the aligned frame; slowed near behind
 /// and near dead ahead so running back at the camera doesn't spin it
 /// (Catlike's `AutomaticRotation`); the pitch eases to `RECENTER_PITCH`
-/// too (theirs leaves it). Any mouse move takes it back.
+/// too (theirs leaves it), moving or not. Any mouse move takes it back.
 fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
     let now = Instant::now();
     let (seen, manual) = shared(|s| (s.seen, s.manual));
@@ -704,8 +704,11 @@ fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
             if abs < RECENTER_SIDE || abs > 180.0 - RECENTER_SIDE {
                 game.yaw += delta.clamp(-change, change);
             }
-            game.pitch += (RECENTER_PITCH - game.pitch).clamp(-step, step);
         }
+        // The pitch settles standing or clinging too (the owner's pick was
+        // a still view): only the yaw needs a run to follow.
+        let step = RECENTER_SPEED * dt as f32;
+        game.pitch += (RECENTER_PITCH - game.pitch).clamp(-step, step);
     }
     let view = (game.yaw, game.pitch);
     shared(|s| {
