@@ -1658,7 +1658,8 @@ pub mod spiderman {
         const ROOF_HOP: f64 = 0.55;
         const ROOF_LEAP_UP: f64 = 0.75;
         /// The parkour run on the ground (R and W held): its top speed (blocks a
-        /// tick, 10 m/s against the game's 5.6 sprint), the speed added a tick on
+        /// tick; with the game's own push from W about 12 m/s, against its 5.6
+        /// sprint), the speed added a tick on
         /// the way there, how far A/D lean it, and a jump's lift.
         const RUN_SPEED: f64 = 0.5;
         const RUN_ACCEL: f64 = 0.03;
@@ -2095,19 +2096,18 @@ pub mod spiderman {
             /// The parkour run: R and W held on the ground, no web, zip or vault.
             /// The speed is kept here, since the game's friction takes most of it
             /// off the velocity read back each tick; it builds from the walk to
-            /// `RUN_SPEED` and A/D lean it sideways.
+            /// `RUN_SPEED` and A/D lean it sideways. Kept over a hop or a curb
+            /// while R and W stay down.
             fn ground_run(&mut self, state: &Sense, v: P, ahead: P, side: f64) -> Option<P> {
-                let on = state.on_ground
-                    && !self.driving
-                    && self.web.is_none()
+                let held = self.web.is_none()
                     && self.zip.is_none()
-                    && self.vault.is_none()
                     && key(state, "KeyR")
                     && key(state, "KeyW")
-                    && !key(state, "ShiftLeft")
-                    && ahead.len() > 0.1;
-                if !on {
+                    && !key(state, "ShiftLeft");
+                if !held {
                     self.run_speed = 0.0;
+                }
+                if !held || !state.on_ground || self.driving || self.vault.is_some() || ahead.len() < 0.1 {
                     return None;
                 }
                 self.run_speed = (self.run_speed.max(v.flat().len()) + RUN_ACCEL).min(RUN_SPEED);
@@ -2919,14 +2919,14 @@ pub mod spiderman {
                 if let Some(run) = self.roof_run(state, look) {
                     return Some(run);
                 }
-                if let Some(run) = self.ground_run(state, v, ahead, side) {
-                    return Some(run);
-                }
                 if self.web.is_some() {
                     self.safe = true;
                 }
                 if state.on_ground && self.web.is_none() && self.zip.is_none() {
                     self.safe = false;
+                }
+                if let Some(run) = self.ground_run(state, v, ahead, side) {
+                    return Some(run);
                 }
                 // Parkour in flight (Spider-Man 2 `rQVxkz7azJA` 87–91.5 s: low
                 // under an overpass, over and through trees): what is ahead along the
