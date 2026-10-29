@@ -25,6 +25,14 @@ const FIXED_CAMERA_REACH: f64 = 16.0;
 const COMMANDS: [&str; 1] = ["swingmode"];
 /// The strongest shake: yaw and pitch, degrees.
 const SHAKE_DEGREES: (f32, f32) = (3.0, 2.0);
+/// The camera's advisor on a turned wall (Web of Shadows): a mouse left alone
+/// this long (s) lets the view drift behind the run at this rate (1/s, ~1 s
+/// to settle), looking this far down onto the wall (radians), once the run
+/// moves at least this much a tick (blocks).
+const STEER_IDLE: f64 = 0.4;
+const STEER_RATE: f64 = 2.5;
+const STEER_DOWN: f64 = 0.35;
+const STEER_MOVE: f64 = 0.02;
 
 struct Shared {
     commands: Vec<(String, String)>,
@@ -42,6 +50,12 @@ struct Shared {
     shake_epoch: Option<Instant>,
     /// The playing wind loop, if one was started.
     wind: Option<u64>,
+    /// The wall turn last frame, the view it left, when the mouse last moved
+    /// and the last frame's time (see `steer`).
+    steer_turn: Option<glam::DQuat>,
+    steer_seen: Option<(f32, f32)>,
+    steer_idle: Option<Instant>,
+    steer_then: Option<Instant>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
@@ -55,6 +69,10 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     jolts: Vec::new(),
     shake_epoch: None,
     wind: None,
+    steer_turn: None,
+    steer_seen: None,
+    steer_idle: None,
+    steer_then: None,
 });
 
 fn shared<T>(f: impl FnOnce(&mut Shared) -> T) -> T {
@@ -122,6 +140,8 @@ fn clear(s: &mut Shared) {
     s.wall_ease = (0.0, None);
     s.jolts.clear();
     s.shake_epoch = None;
+    s.steer_turn = None;
+    s.steer_seen = None;
 }
 
 /// The first collision box along the unit `dir` from `from` within `reach`:
@@ -616,6 +636,60 @@ fn wall_turn(game: &super::Game<'_>) -> glam::DQuat {
     }
 }
 
+/// A view direction as the game's yaw and pitch, degrees (pitch kept off the
+/// poles, where yaw is lost).
+fn view_angles(v: glam::DVec3) -> (f32, f32) {
+    let v = v.normalize_or_zero();
+    let yaw = (-v.x).atan2(v.z).to_degrees() as f32;
+    let pitch = (-v.y.clamp(-1.0, 1.0)).asin().to_degrees().clamp(-89.0, 89.0) as f32;
+    (yaw, pitch)
+}
+
+/// The mouse's view under the wall turn. While the turn comes in, the view
+/// keeps looking where it looked (no jump onto the wall); while it goes out
+/// the view turns with it, so up the wall becomes ahead over the top (the
+/// roof, not the sky).
+/// On a turned wall, with the mouse left alone, the view drifts behind the
+/// run, looking a little down onto the wall (Web of Shadows); any mouse move
+/// takes it back at once.
+fn steer(game: &mut super::Game<'_>, turn: glam::DQuat, wall: Option<glam::DVec3>) {
+    let now = Instant::now();
+    let (prev, seen, idle, then) = shared(|s| (s.steer_turn, s.steer_seen, s.steer_idle, s.steer_then));
+    let dt = then.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
+    // The player's own turn since the last frame (ours was written back).
+    let moved = seen.is_none_or(|(y, p)| (game.yaw - y).abs() > 0.01 || (game.pitch - p).abs() > 0.01);
+    let idle = if moved { now } else { idle.unwrap_or(now) };
+    let id = glam::DQuat::IDENTITY;
+    if let Some(prev) = prev.filter(|p| p.angle_between(turn) > 1e-6 && turn.angle_between(id) > p.angle_between(id)) {
+        let world = prev * glam::DVec3::from_array(super::view_vector(game.yaw, game.pitch));
+        (game.yaw, game.pitch) = view_angles(turn.inverse() * world);
+    }
+    let turned = turn.angle_between(glam::DQuat::IDENTITY) > 1e-4;
+    if let (true, Some(w), Some(p)) = (turned, wall, game.player.as_ref()) {
+        let step = glam::DVec3::new(
+            p.position.x - game.previous_position.x,
+            p.position.y - game.previous_position.y,
+            p.position.z - game.previous_position.z,
+        );
+        let along = step - w * step.dot(w);
+        if now.duration_since(idle).as_secs_f64() > STEER_IDLE && along.length() > STEER_MOVE {
+            let want = along.normalize() * STEER_DOWN.cos() + w * STEER_DOWN.sin();
+            let (yaw, pitch) = view_angles(turn.inverse() * want);
+            let k = (1.0 - (-STEER_RATE * dt).exp()) as f32;
+            let d_yaw = (yaw - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
+            game.yaw += d_yaw * k;
+            game.pitch += (pitch - game.pitch) * k;
+        }
+    }
+    let view = (game.yaw, game.pitch);
+    shared(|s| {
+        s.steer_turn = Some(turn);
+        s.steer_seen = Some(view);
+        s.steer_idle = Some(idle);
+        s.steer_then = Some(now);
+    });
+}
+
 /// The shake's yaw and pitch offsets now, in degrees.
 fn shake_offset() -> (f32, f32) {
     let now = Instant::now();
@@ -683,8 +757,13 @@ pub fn camera_view(
             );
             let eye = feet + glam::DVec3::new(0.0, f64::from(p.dimensions.eye_height), 0.0);
             // The mouse turns the camera as always; on a tall wall the whole
-            // view is turned so the wall is the floor.
+            // view is turned so the wall is the floor, and an idle mouse lets
+            // it drift behind the run.
             let turn = wall_turn(game);
+            steer(game, turn, c.wall.as_ref().map(|w| dvec(w).normalize_or_zero()));
+            let Some(p) = game.player.as_ref() else {
+                return ControlFlow::Continue(());
+            };
             let turned = turn.angle_between(glam::DQuat::IDENTITY) > 1e-4;
             let up = turn * glam::DVec3::Y;
             let look = turn
