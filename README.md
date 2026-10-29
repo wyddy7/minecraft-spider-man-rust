@@ -36,7 +36,7 @@ whatever version you play otherwise, in an instance of its own. More in
 | Input | Does |
 |---|---|
 | hold **R** in the air | web: it flies for a moment, then a pendulum swing over the street; A/D lean the anchor to a side, W pumps |
-| hold **R** on the ground | the parkour run (no web): with W, obstacles are vaulted; jump (Space) or run off an edge with R still held and the web goes |
+| hold **R** on the ground | the parkour run (no web): with W, a run about twice the sprint, obstacles vaulted; jump (Space) or run off an edge with R still held and the web goes |
 | release **R** | let go: a boost (more on the upswing), a forward flip, a spread-eagle fall |
 | hold **Z** | zip to the crosshair (reach 250), riding an arc to the point and hanging there while Z is held; let go to hop on |
 | **Space** | on a web: held swings faster, let go jumps off · on a zip: held hauls, let go jumps off · at the zip point: launch · on a wall: kick off |

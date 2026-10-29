@@ -1657,6 +1657,13 @@ pub mod spiderman {
         const ROOF_TICKS: u32 = 30;
         const ROOF_HOP: f64 = 0.55;
         const ROOF_LEAP_UP: f64 = 0.75;
+        /// The parkour run on the ground (R and W held): its top speed (blocks a
+        /// tick, 10 m/s against the game's 5.6 sprint), the speed added a tick on
+        /// the way there, how far A/D lean it, and a jump's lift.
+        const RUN_SPEED: f64 = 0.5;
+        const RUN_ACCEL: f64 = 0.03;
+        const RUN_SIDE: f64 = 0.5;
+        const RUN_JUMP: f64 = 0.42;
         /// Ground parkour: heights (blocks over the feet) that split the moves —
         /// below `VAULT_MIN` the game's own step-up, above `VAULT_WALL` a building
         /// (the wall needs R, decision 18); an obstacle this long is landed on and
@@ -1891,6 +1898,8 @@ pub mod spiderman {
             space_was: bool,
             roof_ticks: u32,
             roof_speed: f64,
+            /// The parkour run's speed now (see `ground_run`).
+            run_speed: f64,
             /// The wall run's vertical speed now.
             climb: f64,
             /// The zip hook: ticks until it bites, its whole flight, and ticks since
@@ -1956,6 +1965,7 @@ pub mod spiderman {
                     space_was: false,
                     roof_ticks: 0,
                     roof_speed: 0.0,
+                    run_speed: 0.0,
                     zip_flying: 0,
                     zip_flight: 0,
                     zip_ticks: 0,
@@ -2080,6 +2090,31 @@ pub mod spiderman {
                     v = v - UP * 0.08;
                 }
                 Some(v)
+            }
+
+            /// The parkour run: R and W held on the ground, no web, zip or vault.
+            /// The speed is kept here, since the game's friction takes most of it
+            /// off the velocity read back each tick; it builds from the walk to
+            /// `RUN_SPEED` and A/D lean it sideways.
+            fn ground_run(&mut self, state: &Sense, v: P, ahead: P, side: f64) -> Option<P> {
+                let on = state.on_ground
+                    && !self.driving
+                    && self.web.is_none()
+                    && self.zip.is_none()
+                    && self.vault.is_none()
+                    && key(state, "KeyR")
+                    && key(state, "KeyW")
+                    && !key(state, "ShiftLeft")
+                    && ahead.len() > 0.1;
+                if !on {
+                    self.run_speed = 0.0;
+                    return None;
+                }
+                self.run_speed = (self.run_speed.max(v.flat().len()) + RUN_ACCEL).min(RUN_SPEED);
+                let right = ahead.cross(UP).norm();
+                let mut out = (ahead + right * (side * RUN_SIDE)).norm() * self.run_speed;
+                out.y = if key(state, "Space") { RUN_JUMP } else { v.y };
+                Some(out)
             }
 
             /// Over a low obstacle, under an overhang, from the rays ahead.
@@ -2882,6 +2917,9 @@ pub mod spiderman {
                     }
                 }
                 if let Some(run) = self.roof_run(state, look) {
+                    return Some(run);
+                }
+                if let Some(run) = self.ground_run(state, v, ahead, side) {
                     return Some(run);
                 }
                 if self.web.is_some() {
