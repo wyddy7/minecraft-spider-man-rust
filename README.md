@@ -40,7 +40,7 @@ whatever version you play otherwise, in an instance of its own. More in
 | release **R** | let go: a boost (more on the upswing), a forward flip, a spread-eagle fall |
 | hold **Z** | zip to the crosshair (reach 250), riding an arc to the point and hanging there while Z is held; let go to hop on |
 | **Space** | on a web: held swings faster, let go jumps off · on a zip: held hauls, let go jumps off · at the zip point: launch · on a wall: kick off |
-| into a wall with **R** held | on the wall: WASD walk it like a floor, relative to the camera; sprint runs; nothing held clings; the top edge is vaulted |
+| into a wall with **R** held | on the wall: WASD walk it like a floor, relative to the camera; R held runs (up, with no other key), so does sprint; nothing held clings; Space kicks off; the top edge is vaulted |
 | **R** + **W** into an obstacle | parkour by its height: a step or speed vault (1 block), a hand vault (2), a run up the face (3–5); long tops are landed on and run across. Without R the ground plays as vanilla |
 
 A chase camera follows the swing and shakes at speed; the wind gets louder the faster you go. Falls from a swing

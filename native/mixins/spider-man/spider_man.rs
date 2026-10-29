@@ -2394,10 +2394,10 @@ pub mod spiderman {
                         }
                         let along = w.cross(UP).norm();
                         // On the wall WASD walk it as a floor (Web of Shadows): W up,
-                        // S down, A/D along; R held runs, faster, and runs up with no
-                        // key; nothing held clings.
-                        // Running is Minecraft's sprint: Ctrl, or W pressed twice
-                        // quickly (held after the second press). R stays off the wall.
+                        // S down, A/D along; nothing held clings. R held runs, as on
+                        // the ground (PS4's R2): faster, and up with no key; letting
+                        // go walks again, only Space leaves the wall. Minecraft's
+                        // sprint runs too: Ctrl, or W pressed twice quickly.
                         let w_down = key(state, "KeyW");
                         if w_down && !self.w_was {
                             if self.ticks - self.w_last <= SPRINT_TAP {
@@ -2409,8 +2409,8 @@ pub mod spiderman {
                             self.sprint = false;
                         }
                         self.w_was = w_down;
-                        let running = key(state, "ControlLeft") || self.sprint;
                         self.r_held = key(state, "KeyR");
+                        let running = self.r_held || key(state, "ControlLeft") || self.sprint;
                         // WASD follow the camera (Web of Shadows): forward is the
                         // view laid flat on the wall, right is across it. Looking
                         // straight at the wall, forward is up it.
