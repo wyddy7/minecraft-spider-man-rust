@@ -2549,9 +2549,13 @@ pub mod spiderman {
                 // No web from a wall: R there was firing one at once (playtest).
                 let on_wall = matches!(self.phase, Phase::WallRun(_) | Phase::Slap(..));
                 let pressed = r && !self.r_held;
+                // A vault disarms: one cut short in the air must not fire a web.
+                if self.vault.is_some() {
+                    self.web_armed = false;
+                }
                 self.web_armed = r && !on_wall && (self.web_armed || pressed || state.on_ground);
-                // A jump: Space on the ground (a quick tap is up before the feet
-                // leave it, so it is remembered until the landing).
+                // A jump: Space on the ground this tick or the last (a quick tap can
+                // be up before the feet leave it); kept while in the air.
                 if state.on_ground {
                     self.jumped = key(state, "Space") || self.space_was;
                 }
