@@ -286,9 +286,6 @@ pub struct Spidey {
     cam_blend: f32,
     /// This stay on the wall turns the camera (decided as you land on it).
     cam_long: Option<bool>,
-    /// The wall's WASD frame (the wall, forward, right) while a key is held:
-    /// a camera turning meanwhile doesn't change what the keys mean.
-    wall_keys: Option<(P, P, P)>,
     /// A phase whose pose is held for checking (`/swingmode pose`).
     debug: Option<Phase>,
     ground_start: bool,
@@ -376,7 +373,6 @@ impl Default for Spidey {
             cam_wall: None,
             cam_blend: 0.0,
             cam_long: None,
-            wall_keys: None,
             debug: None,
             ground_start: false,
             web: None,
@@ -883,21 +879,13 @@ impl Spidey {
                 // WASD follow the camera (Web of Shadows): forward is the
                 // view laid flat on the wall, right is across it. Looking
                 // straight at the wall, forward is up it.
-                // Held keys keep the frame they were pressed in (the camera
-                // may turn under them); a new press takes the camera's.
+                // The keys go by the wall, not the view (Catlike Coding's
+                // climbing): W up it, S down, D along it to the right of
+                // someone facing it, A to the left. A view looking into the
+                // wall can't flip where they go.
                 let n = w * -1.0;
-                let held = ["KeyW", "KeyA", "KeyS", "KeyD"].iter().any(|k| key(state, k));
-                let (ahead_w, right_w) = match self.wall_keys {
-                    // Only while the camera turns: upright, the mouse steers.
-                    Some((kw, a, r)) if held && self.cam_blend > 0.0 && kw.dot(w) > 0.99 => (a, r),
-                    _ => {
-                        let flat_look = look - n * look.dot(n);
-                        let a = if flat_look.len() > 0.3 { flat_look.norm() } else { UP };
-                        let r = a.cross(n).norm();
-                        self.wall_keys = held.then_some((w, a, r));
-                        (a, r)
-                    }
-                };
+                let ahead_w = UP;
+                let right_w = UP.cross(n).norm();
                 let fwd = axis(state, "KeyW") - axis(state, "KeyS");
                 let mut dir = ahead_w * fwd + right_w * side;
                 if running && dir.len() < 0.01 {
@@ -953,7 +941,6 @@ impl Spidey {
         self.r_held = true;
         self.reattach = 0;
         self.wall_blocked = 0;
-        self.wall_keys = None;
         // A Space held into the run is not a kick.
         self.wall_space = key(state, "Space");
         self.run_twist = 0.0;
@@ -1018,9 +1005,9 @@ impl Spidey {
         if self.cam_blend <= 0.0 {
             self.cam_wall = None;
         }
-        // Eased in and out.
-        let x = self.cam_blend;
-        (self.cam_wall, x * x * (3.0 - 2.0 * x))
+        // The camera eases the turn itself (at a capped speed); it gets
+        // the decision.
+        (self.cam_wall, target)
     }
 
     /// Parts the mod still poses (0: the game's own animation).

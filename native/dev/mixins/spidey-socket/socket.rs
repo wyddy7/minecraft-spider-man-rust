@@ -21,14 +21,17 @@ const FIXED_CAMERA_REACH: f64 = 16.0;
 const COMMANDS: [&str; 1] = ["swingmode"];
 /// The strongest shake: yaw and pitch, degrees.
 const SHAKE_DEGREES: (f32, f32) = (3.0, 2.0);
-/// The camera's advisor on a turned wall (Web of Shadows): a mouse left alone
-/// this long (s) lets the view drift behind the run at this rate (1/s, ~1 s
-/// to settle), looking this far down onto the wall (radians), once the run
-/// moves at least this much a tick (blocks).
-const STEER_IDLE: f64 = 0.4;
-const STEER_RATE: f64 = 2.5;
-const STEER_DOWN: f64 = 0.35;
-const STEER_MOVE: f64 = 0.02;
+/// The wall camera after Catlike Coding's orbit camera (Movement 04–06,
+/// Jasper Flick, MIT-0): the turn toward the wall's up, degrees a second
+/// (~0.6 s for 90); the auto-turn behind the run: after this long without
+/// the mouse (s), at this speed (degrees a second), slowing within this many
+/// degrees of dead behind or dead ahead; the pitch kept off the poles while
+/// turned (degrees).
+const ALIGN_SPEED: f64 = 150.0;
+const RECENTER_DELAY: f64 = 0.6;
+const RECENTER_SPEED: f32 = 90.0;
+const RECENTER_SMOOTH: f32 = 45.0;
+const TURNED_PITCH: f32 = 80.0;
 
 struct Shared {
     commands: Vec<(String, String)>,
@@ -40,18 +43,17 @@ struct Shared {
     safe_fall: bool,
     saved_on_ground: Option<bool>,
     cam_ease: Option<(f64, f64, Instant)>,
-    wall_ease: (f64, Option<Instant>),
     /// Jolts (start, strength, seconds) and the noise's own clock.
     jolts: Vec<(Instant, f32, f32)>,
     shake_epoch: Option<Instant>,
     /// The playing wind loop, if one was started.
     wind: Option<u64>,
-    /// The wall turn last frame, the view it left, when the mouse last moved
-    /// and the last frame's time (see `steer`).
-    steer_turn: Option<glam::DQuat>,
-    steer_seen: Option<(f32, f32)>,
-    steer_idle: Option<Instant>,
-    steer_then: Option<Instant>,
+    /// The camera's turn toward the wall's up (identity off the wall), the
+    /// view it left last frame, the last mouse move and the last frame.
+    align: glam::DQuat,
+    seen: Option<(f32, f32)>,
+    manual: Option<Instant>,
+    align_then: Option<Instant>,
 }
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
@@ -61,14 +63,13 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     safe_fall: false,
     saved_on_ground: None,
     cam_ease: None,
-    wall_ease: (0.0, None),
     jolts: Vec::new(),
     shake_epoch: None,
     wind: None,
-    steer_turn: None,
-    steer_seen: None,
-    steer_idle: None,
-    steer_then: None,
+    align: glam::DQuat::IDENTITY,
+    seen: None,
+    manual: None,
+    align_then: None,
 });
 
 fn shared<T>(f: impl FnOnce(&mut Shared) -> T) -> T {
@@ -133,11 +134,10 @@ fn clear(s: &mut Shared) {
     s.camera = None;
     s.safe_fall = false;
     s.cam_ease = None;
-    s.wall_ease = (0.0, None);
+    s.align = glam::DQuat::IDENTITY;
     s.jolts.clear();
     s.shake_epoch = None;
-    s.steer_turn = None;
-    s.steer_seen = None;
+    s.seen = None;
 }
 
 /// The first collision box along the unit `dir` from `from` within `reach`:
@@ -601,91 +601,84 @@ pub fn player_model(
 
 /// The wall camera's turn of the whole view (identity off the wall); the
 /// same turn applies to the aim, so the crosshair stays true.
-fn wall_turn(game: &super::Game<'_>) -> glam::DQuat {
+fn wall_turn(_game: &super::Game<'_>) -> glam::DQuat {
+    shared(|s| s.align)
+}
+
+/// Turns the alignment toward the up it should have (away from a wall the
+/// mod turns the camera onto, else the sky), at most `ALIGN_SPEED`: the
+/// shortest turn from the current up, put on top of the current alignment,
+/// so the heading carries over (Catlike's `UpdateGravityAlignment`).
+fn update_align(game: &super::Game<'_>, wall: Option<glam::DVec3>, dt: f64) -> glam::DQuat {
     // Without the whole-view turn (a shipped mod can't set it), the view is
     // not turned either: half a turn would unhinge the mouse and the aim.
-    if !horizon_dev_reload::frame::WALL_TURN {
-        return glam::DQuat::IDENTITY;
-    }
-    let camera = shared(|s| s.camera);
-    match camera {
-        Some(Camera::Chase(c)) if !game.camera_type.first_person() => {
-            let now = Instant::now();
-            shared(|s| {
-                let (cur, then) = s.wall_ease;
-                let dt = then.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
-                let want = f64::from(c.wall_blend.clamp(0.0, 1.0));
-                let k = cur + (want - cur) * (1.0 - (-8.0_f64 * dt).exp());
-                let k = if k.is_finite() { k } else { 0.0 };
-                s.wall_ease = (k, Some(now));
-                match &c.wall {
-                    Some(w) if k > 1e-3 => {
-                        let w = dvec(w).normalize_or_zero();
-                        glam::DQuat::IDENTITY
-                            .slerp(glam::DQuat::from_rotation_arc(glam::DVec3::Y, -w), k)
-                    }
-                    _ => glam::DQuat::IDENTITY,
-                }
-            })
+    let to_up = match wall {
+        Some(w) if horizon_dev_reload::frame::WALL_TURN && !game.camera_type.first_person() => -w,
+        _ => glam::DVec3::Y,
+    };
+    shared(|s| {
+        let from_up = s.align * glam::DVec3::Y;
+        let angle = from_up.dot(to_up).clamp(-1.0, 1.0).acos().to_degrees();
+        let max = ALIGN_SPEED * dt;
+        let target = glam::DQuat::from_rotation_arc(from_up, to_up) * s.align;
+        s.align = if angle <= max || angle < 1e-6 {
+            target
+        } else {
+            s.align.slerp(target, max / angle)
         }
-        _ => glam::DQuat::IDENTITY,
-    }
+        .normalize();
+        if !s.align.is_finite() {
+            s.align = glam::DQuat::IDENTITY;
+        }
+        s.align
+    })
 }
 
-/// A view direction as the game's yaw and pitch, degrees (pitch kept off the
-/// poles, where yaw is lost).
-fn view_angles(v: glam::DVec3) -> (f32, f32) {
-    let v = v.normalize_or_zero();
-    let yaw = (-v.x).atan2(v.z).to_degrees() as f32;
-    let pitch = (-v.y.clamp(-1.0, 1.0)).asin().to_degrees().clamp(-89.0, 89.0) as f32;
-    (yaw, pitch)
+/// The view's rotation from the mouse angles, built from the angles (never
+/// read back from a direction, where the poles lose the yaw): +Z turned by
+/// pitch about X, then by yaw about -Y, as the game's `view_vector`.
+fn orbit(yaw: f32, pitch: f32) -> glam::DQuat {
+    glam::DQuat::from_rotation_y(-f64::from(yaw).to_radians())
+        * glam::DQuat::from_rotation_x(f64::from(pitch).to_radians())
 }
 
-/// The mouse's view under the wall turn. While the turn comes in, the view
-/// keeps looking where it looked (no jump onto the wall); while it goes out
-/// the view turns with it, so up the wall becomes ahead over the top (the
-/// roof, not the sky).
-/// On a turned wall, with the mouse left alone, the view drifts behind the
-/// run, looking a little down onto the wall (Web of Shadows); any mouse move
-/// takes it back at once.
-fn steer(game: &mut super::Game<'_>, turn: glam::DQuat, wall: Option<glam::DVec3>) {
+/// On a turned wall, the mouse left alone for `RECENTER_DELAY` lets the yaw
+/// turn behind the run, measured in the aligned frame; slowed near behind
+/// and near dead ahead so running back at the camera doesn't spin it
+/// (Catlike's `AutomaticRotation`). Any mouse move takes it back.
+fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
     let now = Instant::now();
-    let (prev, seen, idle, then) = shared(|s| (s.steer_turn, s.steer_seen, s.steer_idle, s.steer_then));
-    let dt = then.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
-    // The player's own turn since the last frame (ours was written back).
-    let moved = seen.is_none_or(|(y, p)| (game.yaw - y).abs() > 0.01 || (game.pitch - p).abs() > 0.01);
-    let idle = if moved { now } else { idle.unwrap_or(now) };
-    let id = glam::DQuat::IDENTITY;
-    if let Some(prev) = prev.filter(|p| p.angle_between(turn) > 1e-6 && turn.angle_between(id) > p.angle_between(id)) {
-        let world = prev * glam::DVec3::from_array(super::view_vector(game.yaw, game.pitch));
-        let (yaw, pitch) = view_angles(turn.inverse() * world);
-        // By the short way: the game's yaw runs past ±180.
-        game.yaw += (yaw - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
-        game.pitch = pitch;
+    let (seen, manual) = shared(|s| (s.seen, s.manual));
+    let moved = seen.is_none_or(|(y, p)| (game.yaw - y).abs() > 1e-3 || (game.pitch - p).abs() > 1e-3);
+    let manual = if moved { now } else { manual.unwrap_or(now) };
+    let turned = align.angle_between(glam::DQuat::IDENTITY) > 1e-3;
+    if turned {
+        game.pitch = game.pitch.clamp(-TURNED_PITCH, TURNED_PITCH);
     }
-    let turned = turn.angle_between(glam::DQuat::IDENTITY) > 1e-4;
-    if let (true, Some(w), Some(p)) = (turned, wall, game.player.as_ref()) {
+    if let (true, Some(p)) = (turned && now.duration_since(manual).as_secs_f64() > RECENTER_DELAY, game.player.as_ref()) {
         let step = glam::DVec3::new(
             p.position.x - game.previous_position.x,
             p.position.y - game.previous_position.y,
             p.position.z - game.previous_position.z,
         );
-        let along = step - w * step.dot(w);
-        if now.duration_since(idle).as_secs_f64() > STEER_IDLE && along.length() > STEER_MOVE {
-            let want = along.normalize() * STEER_DOWN.cos() + w * STEER_DOWN.sin();
-            let (yaw, pitch) = view_angles(turn.inverse() * want);
-            let k = (1.0 - (-STEER_RATE * dt).exp()) as f32;
-            let d_yaw = (yaw - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
-            game.yaw += d_yaw * k;
-            game.pitch += (pitch - game.pitch) * k;
+        let d = align.inverse() * step;
+        if d.x * d.x + d.z * d.z > 1e-4 {
+            let heading = (-d.x).atan2(d.z).to_degrees() as f32;
+            let delta = (heading - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
+            let abs = delta.abs();
+            let mut change = RECENTER_SPEED * dt as f32;
+            if abs < RECENTER_SMOOTH {
+                change *= abs / RECENTER_SMOOTH;
+            } else if 180.0 - abs < RECENTER_SMOOTH {
+                change *= (180.0 - abs) / RECENTER_SMOOTH;
+            }
+            game.yaw += delta.clamp(-change, change);
         }
     }
     let view = (game.yaw, game.pitch);
     shared(|s| {
-        s.steer_turn = Some(turn);
-        s.steer_seen = Some(view);
-        s.steer_idle = Some(idle);
-        s.steer_then = Some(now);
+        s.seen = Some(view);
+        s.manual = Some(manual);
     });
 }
 
@@ -755,22 +748,29 @@ pub fn camera_view(
                 game.previous_position.z + (p.position.z - game.previous_position.z) * a,
             );
             let eye = feet + glam::DVec3::new(0.0, f64::from(p.dimensions.eye_height), 0.0);
-            // The mouse turns the camera as always; on a tall wall the whole
-            // view is turned so the wall is the floor, and an idle mouse lets
-            // it drift behind the run.
-            let turn = wall_turn(game);
-            steer(game, turn, c.wall.as_ref().map(|w| dvec(w).normalize_or_zero()));
+            // Catlike Coding's orbit camera: the mouse angles turn the view
+            // in a frame aligned with the wall's up (the sky off the wall),
+            // which turns toward it at a capped speed; the view is the
+            // alignment times the angles' rotation, never read back from a
+            // direction (no flips at the poles).
+            let now = Instant::now();
+            let dt = shared(|s| {
+                let dt = s.align_then.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
+                s.align_then = Some(now);
+                dt
+            });
+            let wall = c.wall.as_ref().filter(|_| c.wall_blend > 0.5).map(|w| dvec(w).normalize_or_zero());
+            let turn = update_align(game, wall, dt);
+            recenter(game, turn, dt);
             let Some(p) = game.player.as_ref() else {
                 return ControlFlow::Continue(());
             };
             let turned = turn.angle_between(glam::DQuat::IDENTITY) > 1e-4;
+            let (yaw, pitch) = (game.yaw + shake_yaw, game.pitch + shake_pitch);
+            let rotation = turn * orbit(yaw, pitch);
+            let look = rotation * glam::DVec3::Z;
             let up = turn * glam::DVec3::Y;
-            let look = turn
-                * glam::DVec3::from_array(super::view_vector(
-                    game.yaw + shake_yaw,
-                    game.pitch + shake_pitch,
-                ));
-            let right = look.cross(up).normalize_or_zero();
+            let right = rotation * glam::DVec3::NEG_X;
             let pivot = eye + up * f64::from(c.height.clamp(-4.0, 4.0));
             let distance = f64::from(c.distance.clamp(0.0, 16.0));
             let reach = |side: f64| {
@@ -828,15 +828,20 @@ pub fn camera_view(
                 eased
             });
             let at = pivot - look * back + right * side;
-            let view = look_from(at, at + look);
-            if turned {
-                // The whole orientation goes to the renderer: angles break
-                // down when the view runs up a wall.
-                let right = look.cross(up).normalize_or_zero();
-                let up = right.cross(look);
-                let basis = glam::Mat3::from_cols(right.as_vec3(), up.as_vec3(), (-look).as_vec3());
+            // Upright, the game's own angles (exact; a direction read back
+            // loses the yaw looking straight up or down). Turned, the whole
+            // orientation goes to the renderer, from the same rotation.
+            let view = if turned {
+                let basis = glam::Mat3::from_cols(
+                    right.as_vec3(),
+                    (rotation * glam::DVec3::Y).as_vec3(),
+                    (-look).as_vec3(),
+                );
                 horizon_dev_reload::frame::set_view_turn(Some(glam::Quat::from_mat3(&basis).to_array()));
-            }
+                look_from(at, at + look)
+            } else {
+                (at, yaw, pitch)
+            };
             ControlFlow::Break(Some(view))
         }
     }
