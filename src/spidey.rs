@@ -876,9 +876,6 @@ impl Spidey {
                 self.w_was = w_down;
                 self.r_held = key(state, "KeyR");
                 let running = self.r_held || key(state, "ControlLeft") || self.sprint;
-                // WASD follow the camera (Web of Shadows): forward is the
-                // view laid flat on the wall, right is across it. Looking
-                // straight at the wall, forward is up it.
                 // The keys go by the wall, not the view (Catlike Coding's
                 // climbing): W up it, S down, D along it to the right of
                 // someone facing it, A to the left. A view looking into the

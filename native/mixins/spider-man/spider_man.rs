@@ -613,14 +613,17 @@ fn wall_turn(_game: &super::Game<'_>) -> glam::DQuat {
 /// mod turns the camera onto, else the sky), at most `ALIGN_SPEED`: the
 /// shortest turn from the current up, put on top of the current alignment,
 /// so the heading carries over (Catlike's `UpdateGravityAlignment`).
-fn update_align(game: &super::Game<'_>, wall: Option<glam::DVec3>, dt: f64) -> glam::DQuat {
+/// Back upright, what is left is a turn about the sky (a wall after a wall
+/// carries a heading over): it goes into the mouse yaw and the alignment is
+/// identity again, so the game's own angles are the view.
+fn update_align(game: &mut super::Game<'_>, wall: Option<glam::DVec3>, dt: f64) -> glam::DQuat {
     // Without the whole-view turn (a shipped mod can't set it), the view is
     // not turned either: half a turn would unhinge the mouse and the aim.
     let to_up = match wall {
         Some(w) if horizon_dev_reload::frame::WALL_TURN && !game.camera_type.first_person() => -w,
         _ => glam::DVec3::Y,
     };
-    shared(|s| {
+    let (align, twist) = shared(|s| {
         let from_up = s.align * glam::DVec3::Y;
         let angle = from_up.dot(to_up).clamp(-1.0, 1.0).acos().to_degrees();
         let max = ALIGN_SPEED * dt;
@@ -634,8 +637,23 @@ fn update_align(game: &super::Game<'_>, wall: Option<glam::DVec3>, dt: f64) -> g
         if !s.align.is_finite() {
             s.align = glam::DQuat::IDENTITY;
         }
-        s.align
-    })
+        let mut twist = 0.0;
+        if to_up == glam::DVec3::Y && (s.align * glam::DVec3::Y).dot(glam::DVec3::Y) > 1.0 - 1e-9 {
+            let f = s.align * glam::DVec3::Z;
+            twist = f.x.atan2(f.z).to_degrees() as f32;
+            s.align = glam::DQuat::IDENTITY;
+        }
+        (s.align, twist)
+    });
+    // The same view: `Ry(t) * orbit(yaw, p) = orbit(yaw - t, p)`.
+    game.yaw -= twist;
+    align
+}
+
+/// No chase camera this frame (first person, a fixed view, none): no wall
+/// turn either, or the aim would stay turned under an upright view.
+fn drop_align() {
+    shared(|s| s.align = glam::DQuat::IDENTITY);
 }
 
 /// The view's rotation from the mouse angles, built from the angles (never
@@ -655,7 +673,7 @@ fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
     let (seen, manual) = shared(|s| (s.seen, s.manual));
     let moved = seen.is_none_or(|(y, p)| (game.yaw - y).abs() > 1e-3 || (game.pitch - p).abs() > 1e-3);
     let manual = if moved { now } else { manual.unwrap_or(now) };
-    let turned = align.angle_between(glam::DQuat::IDENTITY) > 1e-3;
+    let turned = align.angle_between(glam::DQuat::IDENTITY) > 1e-4;
     if turned {
         game.pitch = game.pitch.clamp(-TURNED_PITCH, TURNED_PITCH);
     }
@@ -728,6 +746,7 @@ pub fn camera_view(
         (from, yaw, pitch)
     };
     let Some(camera) = shared(|s| s.camera).filter(|_| local(game)) else {
+        drop_align();
         return ControlFlow::Continue(());
     };
     let Some(p) = game.player.as_ref() else {
@@ -736,6 +755,7 @@ pub fn camera_view(
     let (shake_yaw, shake_pitch) = shake_offset();
     match camera {
         Camera::Fixed(f) => {
+            drop_align();
             // Near the player: a view of the body, not a free camera.
             let body = glam::DVec3::new(p.position.x, p.position.y, p.position.z);
             let near = |v: &Vec3| body + (dvec(v) - body).clamp_length_max(FIXED_CAMERA_REACH);
@@ -743,6 +763,7 @@ pub fn camera_view(
         }
         Camera::Chase(c) => {
             if game.camera_type.first_person() {
+                drop_align();
                 return ControlFlow::Continue(());
             }
             let a = f64::from(partial);
@@ -2548,9 +2569,6 @@ pub mod spiderman {
                         self.w_was = w_down;
                         self.r_held = key(state, "KeyR");
                         let running = self.r_held || key(state, "ControlLeft") || self.sprint;
-                        // WASD follow the camera (Web of Shadows): forward is the
-                        // view laid flat on the wall, right is across it. Looking
-                        // straight at the wall, forward is up it.
                         // The keys go by the wall, not the view (Catlike Coding's
                         // climbing): W up it, S down, D along it to the right of
                         // someone facing it, A to the left. A view looking into the
