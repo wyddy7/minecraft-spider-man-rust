@@ -283,6 +283,11 @@ pub struct Spidey {
     pub impact: f64,
     cam_wall: Option<P>,
     cam_blend: f32,
+    /// This stay on the wall turns the camera (decided as you land on it).
+    cam_long: Option<bool>,
+    /// The wall's WASD frame (the wall, forward, right) while a key is held:
+    /// a camera turning meanwhile doesn't change what the keys mean.
+    wall_keys: Option<(P, P, P)>,
     /// A phase whose pose is held for checking (`/swingmode pose`).
     debug: Option<Phase>,
     ground_start: bool,
@@ -366,6 +371,8 @@ impl Default for Spidey {
             impact: 0.0,
             cam_wall: None,
             cam_blend: 0.0,
+            cam_long: None,
+            wall_keys: None,
             debug: None,
             ground_start: false,
             web: None,
@@ -868,10 +875,20 @@ impl Spidey {
                 // WASD follow the camera (Web of Shadows): forward is the
                 // view laid flat on the wall, right is across it. Looking
                 // straight at the wall, forward is up it.
+                // Held keys keep the frame they were pressed in (the camera
+                // may turn under them); a new press takes the camera's.
                 let n = w * -1.0;
-                let flat_look = look - n * look.dot(n);
-                let ahead_w = if flat_look.len() > 0.3 { flat_look.norm() } else { UP };
-                let right_w = ahead_w.cross(n).norm();
+                let held = ["KeyW", "KeyA", "KeyS", "KeyD"].iter().any(|k| key(state, k));
+                let (ahead_w, right_w) = match self.wall_keys {
+                    Some((kw, a, r)) if held && kw.dot(w) > 0.99 => (a, r),
+                    _ => {
+                        let flat_look = look - n * look.dot(n);
+                        let a = if flat_look.len() > 0.3 { flat_look.norm() } else { UP };
+                        let r = a.cross(n).norm();
+                        self.wall_keys = held.then_some((w, a, r));
+                        (a, r)
+                    }
+                };
                 let fwd = axis(state, "KeyW") - axis(state, "KeyS");
                 let mut dir = ahead_w * fwd + right_w * side;
                 if running && dir.len() < 0.01 {
@@ -963,11 +980,22 @@ fn angle_step(from: f32, to: f32, k: f32) -> f32 {
 
 impl Spidey {
     /// The wall the camera turns onto during a long run, and how far it has
-    /// turned (0..1).
+    /// turned (0..1). Whether it turns is decided once, as you land on the
+    /// wall (Web of Shadows: a tall wall turns it, a low one doesn't), and
+    /// held until you leave it: the wall above changing on the way up (a
+    /// window ledge, the last floors) never turns it back and forth.
     pub fn wall_camera(&mut self, state: &Sense) -> (Option<P>, f32) {
+        // Out from under an overhang is still on the wall.
+        let on_wall = matches!(self.phase, Phase::WallRun(_)) || (self.overhang.is_some() && self.cam_long.is_some());
+        if !on_wall {
+            self.cam_long = None;
+        } else if self.cam_long.is_none() {
+            self.cam_long = Some(state.wall_above >= LONG_WALL);
+        }
         let long = match self.phase {
-            Phase::WallRun(w) if state.wall_above >= LONG_WALL => Some(w),
-            _ => None,
+            _ if self.cam_long != Some(true) => None,
+            Phase::WallRun(w) => Some(w),
+            _ => self.cam_wall,
         };
         if let Some(w) = long {
             self.cam_wall = Some(w);
