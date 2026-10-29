@@ -8,6 +8,10 @@
 // these types means rebuilding the game.
 
 pub mod abi;
+/// The development game turns the whole view onto a wall (`frame`); the
+/// plug reads this to know the view it gets is turned. A shipped mod's
+/// stand-in says false.
+pub const WALL_TURN: bool = true;
 #[cfg(feature = "host")]
 pub mod frame;
 

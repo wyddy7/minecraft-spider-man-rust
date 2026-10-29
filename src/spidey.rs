@@ -876,7 +876,8 @@ impl Spidey {
                 self.w_was = w_down;
                 self.r_held = key(state, "KeyR");
                 let running = self.r_held || key(state, "ControlLeft") || self.sprint;
-                // On a wall the camera turned onto, the keys follow the view
+                // On a wall the camera turned onto (a tall one, in a build
+                // that turns the view), the keys follow the view
                 // laid on the wall (its pitch is kept off the wall's normal,
                 // so this never degenerates): look down it and W goes down.
                 // Upright on a low wall they go by the wall, as Catlike
@@ -885,7 +886,8 @@ impl Spidey {
                 // them.
                 let n = w * -1.0;
                 let flat_look = look - n * look.dot(n);
-                let ahead_w = if self.cam_long == Some(true) && flat_look.len() > 0.3 { flat_look.norm() } else { UP };
+                let turned = self.cam_long == Some(true) && horizon_mod_sdk::motion::WALL_TURN;
+                let ahead_w = if turned && flat_look.len() > 0.3 { flat_look.norm() } else { UP };
                 let right_w = ahead_w.cross(n).norm();
                 let fwd = axis(state, "KeyW") - axis(state, "KeyS");
                 let mut dir = ahead_w * fwd + right_w * side;

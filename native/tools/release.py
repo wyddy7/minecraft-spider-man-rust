@@ -123,6 +123,9 @@ def abi_module():
         1
     }}
 
+    /// A shipped mod keeps the game's own upright view.
+    pub const WALL_TURN: bool = false;
+
     /// The wall camera's whole-view turn needs a crate both the game and its
     /// library see; a shipped mod keeps the game's own view.
     pub mod frame {{

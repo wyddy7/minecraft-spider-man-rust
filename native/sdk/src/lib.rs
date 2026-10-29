@@ -119,6 +119,9 @@ pub mod motion {
     pub use horizon_dev_reload::abi::{
         Camera, ChaseCamera, FixedCamera, PartPose, Pose, Ray, Rope, State, Vec3,
     };
+    /// The game can turn the whole view onto a wall (the development
+    /// build); a shipped mod keeps the game's own upright view.
+    pub const WALL_TURN: bool = horizon_dev_reload::WALL_TURN;
     pub fn get() -> Option<State> {
         super::input(|i| i.state.clone())
     }

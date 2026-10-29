@@ -1133,6 +1133,9 @@ pub mod horizon_dev_reload {
         1
     }
 
+    /// A shipped mod keeps the game's own upright view.
+    pub const WALL_TURN: bool = false;
+
     /// The wall camera's whole-view turn needs a crate both the game and its
     /// library see; a shipped mod keeps the game's own view.
     pub mod frame {
@@ -1263,6 +1266,9 @@ pub mod horizon_mod_sdk {
         pub use crate::game::spider_man::horizon_dev_reload::abi::{
             Camera, ChaseCamera, FixedCamera, PartPose, Pose, Ray, Rope, State, Vec3,
         };
+        /// The game can turn the whole view onto a wall (the development
+        /// build); a shipped mod keeps the game's own upright view.
+        pub const WALL_TURN: bool = crate::game::spider_man::horizon_dev_reload::WALL_TURN;
         pub fn get() -> Option<State> {
             super::input(|i| i.state.clone())
         }
@@ -2582,7 +2588,8 @@ pub mod spiderman {
                         self.w_was = w_down;
                         self.r_held = key(state, "KeyR");
                         let running = self.r_held || key(state, "ControlLeft") || self.sprint;
-                        // On a wall the camera turned onto, the keys follow the view
+                        // On a wall the camera turned onto (a tall one, in a build
+                        // that turns the view), the keys follow the view
                         // laid on the wall (its pitch is kept off the wall's normal,
                         // so this never degenerates): look down it and W goes down.
                         // Upright on a low wall they go by the wall, as Catlike
@@ -2591,7 +2598,8 @@ pub mod spiderman {
                         // them.
                         let n = w * -1.0;
                         let flat_look = look - n * look.dot(n);
-                        let ahead_w = if self.cam_long == Some(true) && flat_look.len() > 0.3 { flat_look.norm() } else { UP };
+                        let turned = self.cam_long == Some(true) && crate::game::spider_man::horizon_mod_sdk::motion::WALL_TURN;
+                        let ahead_w = if turned && flat_look.len() > 0.3 { flat_look.norm() } else { UP };
                         let right_w = ahead_w.cross(n).norm();
                         let fwd = axis(state, "KeyW") - axis(state, "KeyS");
                         let mut dir = ahead_w * fwd + right_w * side;
