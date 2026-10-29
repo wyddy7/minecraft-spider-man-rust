@@ -8,6 +8,9 @@
 - The ODM gear mode is gone; `/swingmode on|off` switches the mod, the other subcommands mirror its settings.
 - A development loop with live reload: the game loads the mod as a library and picks up a rebuild within about a
   second (`native/tools/watch.sh`).
+- Parkour only while R is held, as R2 on PS4: on the ground R runs and vaults and shoots no web; without R the
+  ground plays as vanilla. R held from the ground fires the web after a jump or a fall off an edge. The ground
+  jump-into-swing and its setting (`/swingmode jump`) are gone.
 
 ## 0.1.0 — 2026-10-28
 
