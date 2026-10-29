@@ -29,12 +29,17 @@ const SHAKE_DEGREES: (f32, f32) = (3.0, 2.0);
 /// Jasper Flick, MIT-0): the turn toward the wall's up, degrees a second
 /// (~0.6 s for 90); the auto-turn behind the run: after this long without
 /// the mouse (s), at this speed (degrees a second), slowing within this many
-/// degrees of dead behind or dead ahead; the pitch kept off the poles while
-/// turned (degrees).
+/// degrees of dead behind or dead ahead, and left alone for a run more
+/// sideways than this (the keys follow the view: turning it would steer a
+/// run along the wall into a circle); the pitch it settles at, looking down
+/// onto the wall from a little above the back (the owner's pick, 29.10); the
+/// pitch kept off the poles while turned (degrees).
 const ALIGN_SPEED: f64 = 150.0;
 const RECENTER_DELAY: f64 = 0.6;
 const RECENTER_SPEED: f32 = 90.0;
 const RECENTER_SMOOTH: f32 = 45.0;
+const RECENTER_SIDE: f32 = 60.0;
+const RECENTER_PITCH: f32 = 15.0;
 const TURNED_PITCH: f32 = 80.0;
 
 struct Shared {
@@ -667,7 +672,8 @@ fn orbit(yaw: f32, pitch: f32) -> glam::DQuat {
 /// On a turned wall, the mouse left alone for `RECENTER_DELAY` lets the yaw
 /// turn behind the run, measured in the aligned frame; slowed near behind
 /// and near dead ahead so running back at the camera doesn't spin it
-/// (Catlike's `AutomaticRotation`). Any mouse move takes it back.
+/// (Catlike's `AutomaticRotation`); the pitch eases to `RECENTER_PITCH`
+/// too (theirs leaves it). Any mouse move takes it back.
 fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
     let now = Instant::now();
     let (seen, manual) = shared(|s| (s.seen, s.manual));
@@ -688,13 +694,17 @@ fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
             let heading = (-d.x).atan2(d.z).to_degrees() as f32;
             let delta = (heading - game.yaw + 180.0).rem_euclid(360.0) - 180.0;
             let abs = delta.abs();
-            let mut change = RECENTER_SPEED * dt as f32;
+            let step = RECENTER_SPEED * dt as f32;
+            let mut change = step;
             if abs < RECENTER_SMOOTH {
                 change *= abs / RECENTER_SMOOTH;
             } else if 180.0 - abs < RECENTER_SMOOTH {
                 change *= (180.0 - abs) / RECENTER_SMOOTH;
             }
-            game.yaw += delta.clamp(-change, change);
+            if abs < RECENTER_SIDE || abs > 180.0 - RECENTER_SIDE {
+                game.yaw += delta.clamp(-change, change);
+            }
+            game.pitch += (RECENTER_PITCH - game.pitch).clamp(-step, step);
         }
     }
     let view = (game.yaw, game.pitch);
@@ -2569,13 +2579,17 @@ pub mod spiderman {
                         self.w_was = w_down;
                         self.r_held = key(state, "KeyR");
                         let running = self.r_held || key(state, "ControlLeft") || self.sprint;
-                        // The keys go by the wall, not the view (Catlike Coding's
-                        // climbing): W up it, S down, D along it to the right of
-                        // someone facing it, A to the left. A view looking into the
-                        // wall can't flip where they go.
+                        // On a wall the camera turned onto, the keys follow the view
+                        // laid on the wall (its pitch is kept off the wall's normal,
+                        // so this never degenerates): look down it and W goes down.
+                        // Upright on a low wall they go by the wall, as Catlike
+                        // Coding's climbing: W up, S down, D to the right of someone
+                        // facing it, A to the left; a view into the wall can't flip
+                        // them.
                         let n = w * -1.0;
-                        let ahead_w = UP;
-                        let right_w = UP.cross(n).norm();
+                        let flat_look = look - n * look.dot(n);
+                        let ahead_w = if self.cam_long == Some(true) && flat_look.len() > 0.3 { flat_look.norm() } else { UP };
+                        let right_w = ahead_w.cross(n).norm();
                         let fwd = axis(state, "KeyW") - axis(state, "KeyS");
                         let mut dir = ahead_w * fwd + right_w * side;
                         if running && dir.len() < 0.01 {

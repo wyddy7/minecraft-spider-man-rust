@@ -876,13 +876,17 @@ impl Spidey {
                 self.w_was = w_down;
                 self.r_held = key(state, "KeyR");
                 let running = self.r_held || key(state, "ControlLeft") || self.sprint;
-                // The keys go by the wall, not the view (Catlike Coding's
-                // climbing): W up it, S down, D along it to the right of
-                // someone facing it, A to the left. A view looking into the
-                // wall can't flip where they go.
+                // On a wall the camera turned onto, the keys follow the view
+                // laid on the wall (its pitch is kept off the wall's normal,
+                // so this never degenerates): look down it and W goes down.
+                // Upright on a low wall they go by the wall, as Catlike
+                // Coding's climbing: W up, S down, D to the right of someone
+                // facing it, A to the left; a view into the wall can't flip
+                // them.
                 let n = w * -1.0;
-                let ahead_w = UP;
-                let right_w = UP.cross(n).norm();
+                let flat_look = look - n * look.dot(n);
+                let ahead_w = if self.cam_long == Some(true) && flat_look.len() > 0.3 { flat_look.norm() } else { UP };
+                let right_w = ahead_w.cross(n).norm();
                 let fwd = axis(state, "KeyW") - axis(state, "KeyS");
                 let mut dir = ahead_w * fwd + right_w * side;
                 if running && dir.len() < 0.01 {
