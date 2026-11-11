@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- A vault off a roof gives the fall back once its flip is done: WASD steers and a web can be shot on the way
+  down (the whole drop used to follow the vault's line).
+
 ## 0.2.3 — 2026-11-11
 
 - The fall is forgotten from the moment a web or a zip bites, not from the shot: a web still flying when you hit

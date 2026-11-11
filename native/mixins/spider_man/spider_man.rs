@@ -2076,6 +2076,9 @@ pub mod spiderman {
         /// Reaching a point this much higher than the start is a climb to a ledge:
         /// the hop is a vault over its edge.
         const VAULT_RISE: f64 = 1.5;
+        /// Below the start by this much after the drop's flip, the vault lets go
+        /// (a drop off a roof, not off a car).
+        const VAULT_DROP_HANDOFF: f64 = 2.0;
         const ZIP_VAULT: f64 = 0.75;
         /// Closer than this to the point, the zip is done.
         const ZIP_HOLD: f64 = 1.5;
@@ -2681,6 +2684,15 @@ pub mod spiderman {
                         self.vault = None;
                         self.asked = None;
                         self.phase = Phase::Ground;
+                        return None;
+                    }
+                    // Off a roof, not a car: once the flip is done and the feet are
+                    // well below where the run started, the fall is the game's again
+                    // (WASD steers, a web can be shot), as a plain fall would be.
+                    if k as f64 >= total && h < -VAULT_DROP_HANDOFF {
+                        self.vault = None;
+                        self.asked = None;
+                        self.phase = Phase::Fall;
                         return None;
                     }
                     let vy = vt.arc_vy.unwrap_or(0.0);
