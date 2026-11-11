@@ -35,13 +35,12 @@ bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *s
 
 [[injection]]
 id = "after-send-state"
-kind = "RETURN"
-target = "horizon_client::game::remote::Game<'_>::remote_send_state"
+kind = "HEAD"
+# remote_send_state's own RETURN can't be hooked (a nested item in its body): the
+# next thing tick_remote runs after the state packet is tick_own_rockets.
+target = "horizon_client::game::remote_projectiles::Game<'_>::tick_own_rockets"
 helper = "send_state_end.rs"
-bindings = [
-  { name = "value", ty = "()", value = "$value" },
-  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
-]
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
 
 [[injection]]
 id = "plug-ropes"
