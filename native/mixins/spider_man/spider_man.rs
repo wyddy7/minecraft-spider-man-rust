@@ -55,6 +55,9 @@ struct Shared {
     /// The plug forgot the fall this tick; the on-ground value to restore
     /// after the state packet.
     safe_fall: bool,
+    /// An on-ground packet went out since the server's last turn of the
+    /// owner: that turn forgets the fall even if the web has ended by then.
+    server_safe: bool,
     saved_on_ground: Option<bool>,
     cam_ease: Option<(f64, f64, Instant)>,
     /// Jolts (start, strength, seconds) and the noise's own clock.
@@ -85,6 +88,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     poses: [None, None],
     camera: None,
     safe_fall: false,
+    server_safe: false,
     saved_on_ground: None,
     cam_ease: None,
     jolts: Vec::new(),
@@ -158,6 +162,7 @@ fn clear(s: &mut Shared) {
     s.poses = [None, None];
     s.camera = None;
     s.safe_fall = false;
+    s.server_safe = false;
     s.cam_ease = None;
     s.align = glam::DQuat::IDENTITY;
     s.jolts.clear();
@@ -435,7 +440,10 @@ pub fn before_send_state(game: &mut super::Game<'_>) {
     let Some(p) = game.player.as_mut().filter(|_| safe) else {
         return;
     };
-    shared(|s| s.saved_on_ground = Some(p.ground.on_ground));
+    shared(|s| {
+        s.saved_on_ground = Some(p.ground.on_ground);
+        s.server_safe = true;
+    });
     p.ground.on_ground = true;
 }
 
@@ -447,7 +455,10 @@ pub fn before_send_state(game: &mut super::Game<'_>) {
 pub fn server_turn(host: &super::lan::LanHost, conn: u32) {
     let owner = host.owner.as_ref().map(|o| o.uuid);
     let own = owner.is_some() && host.hub.guests.iter().any(|g| g.conn == conn && Some(g.uuid) == owner);
-    horizon_client::motion::spider_man_fall::set(own && shared(|s| s.safe_fall));
+    // The packets this turn reads may predate a web that has just ended: an
+    // on-ground packet since the last turn counts too.
+    let forget = own && shared(|s| std::mem::take(&mut s.server_safe) || s.safe_fall);
+    horizon_client::motion::spider_man_fall::set(forget);
 }
 
 /// After the state packet: the player's own on-ground value again.
