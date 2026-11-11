@@ -3129,7 +3129,6 @@ pub mod spiderman {
                         self.zip_flight = flight;
                         self.web = None;
                         self.driving = false;
-                        self.safe = true;
                     }
                 }
                 // Point launch (Spider-Man 2 `h_ToNJySgwE` 573.1–574.0 s, 429.8–430.1 s):
@@ -3205,7 +3204,9 @@ pub mod spiderman {
                         self.zip_flying -= 1;
                         if self.zip_flying == 0 {
                             // It bites: the old momentum goes, and the path is laid
-                            // from here to the point over an upper arc.
+                            // from here to the point over an upper arc. The fall is
+                            // forgotten from here, as for a web.
+                            self.safe = true;
                             self.arc_from = chest;
                             self.arc_height = arc_bump(chest, target, v.y < -0.3);
                             self.arc_t = 0.0;
@@ -3384,7 +3385,10 @@ pub mod spiderman {
                 if let Some(run) = self.roof_run(state, look) {
                     return Some(run);
                 }
-                if self.web.is_some() {
+                // The fall is forgotten from the moment the web bites, not the shot:
+                // a web still flying when you hit the ground does not save you (its
+                // flight time follows the web delay).
+                if self.web.as_ref().is_some_and(|w| w.flying == 0) {
                     self.safe = true;
                 }
                 if state.on_ground && self.web.is_none() && self.zip.is_none() {

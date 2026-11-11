@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The fall is forgotten from the moment a web or a zip bites, not from the shot: a web still flying when you hit
+  the ground no longer saves you from a long drop (its flight time follows the web delay). A web that bites in
+  time still lands you softly from any height.
+
 ## 0.2.2 — 2026-11-11
 
 - On Horizon's Nightly of 2026-11-08 (`fdc87ae`) and horizon-mixins `5a64af9` (thanks to marshaaaal).
