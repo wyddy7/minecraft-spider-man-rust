@@ -4,7 +4,7 @@ version = "0.2.1"
 priority = 100
 
 [compatibility]
-horizon_revision = "0722c1055d0af6756dd0eeb8d7880747008d633f"
+horizon_revision = "e0c615b64365eb69e7508501b903bee374982b7d"
 
 [[module]]
 id = "view-turn"
