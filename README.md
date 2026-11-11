@@ -52,7 +52,7 @@ player where the server is yours. A city map makes the most of it; for the look,
 
 ## Status
 
-0.2.1: the native build has everything above, on Horizon's Nightly of 2026-11-03. Multiplayer on servers is the
+0.2.2: the native build has everything above, on Horizon's Nightly of 2026-11-08. Multiplayer on servers is the
 plan, the way movement mods do it: the server runs the mod too and lets its players swing.
 
 ## For mod authors
