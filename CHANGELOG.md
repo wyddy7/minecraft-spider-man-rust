@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 — 2026-11-11
 
 - The fall is forgotten from the moment a web or a zip bites, not from the shot: a web still flying when you hit
   the ground no longer saves you from a long drop (its flight time follows the web delay). A web that bites in
