@@ -19,6 +19,13 @@ file = "crates/horizon-client/src/game.rs"
 name = "spider_man"
 source = "spider_man.rs"
 
+[[module]]
+id = "fall-gate"
+file = "crates/horizon-client/src/motion.rs"
+name = "spider_man_fall"
+source = "fall_gate.rs"
+visibility = "pub"
+
 [[injection]]
 id = "before-level-tick"
 kind = "HEAD"
@@ -41,6 +48,26 @@ kind = "HEAD"
 target = "horizon_client::game::remote_projectiles::Game<'_>::tick_own_rockets"
 helper = "send_state_end.rs"
 bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+
+[[injection]]
+id = "server-turn"
+kind = "HEAD"
+target = "horizon_client::game::lan_actions::Game<'_>::guest_server_tick"
+helper = "server_turn.rs"
+bindings = [
+  { name = "host", ty = "&crate::game::lan::LanHost", value = "&*host" },
+  { name = "conn", ty = "u32", value = "conn" },
+]
+
+[[injection]]
+id = "web-forgets-fall"
+kind = "HEAD"
+target = "horizon_client::motion::<MotionWorld<'_,'_,'_> as EntityMoveWorld>::check_fall_damage"
+helper = "fall.rs"
+bindings = [
+  { name = "w", ty = "&mut crate::motion::MotionWorld<'_, '_, '_>", value = "&mut *self" },
+  { name = "dy", ty = "f64", value = "dy" },
+]
 
 [[injection]]
 id = "plug-ropes"

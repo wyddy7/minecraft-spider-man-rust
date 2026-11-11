@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- On Horizon's Nightly of 2026-11-08 (`fdc87ae`) and horizon-mixins `5a64af9` (thanks to marshaaaal).
+- A web or a zip shot while falling no longer hurts: in your own world the server now forgets the fall from before
+  the web, as Slow Falling does, instead of landing it at the web (a drop of ten blocks and a web took about 7
+  health). A plain fall still hurts as before.
+
 ## 0.2.1 — 2026-11-10
 
 - A hint for a first web: "Hold R and jump to swing, or hold Z to zip" (naming the keys they are on) above the
