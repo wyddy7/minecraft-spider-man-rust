@@ -439,6 +439,17 @@ pub fn before_send_state(game: &mut super::Game<'_>) {
     p.ground.on_ground = true;
 }
 
+/// The own world's server, at the start of a player's turn: while the web of
+/// the world's owner holds, their fall checks forget the fall (`fall.rs`). The
+/// on-ground packets above keep the landing soft; this keeps the first of
+/// them from landing the fall from before the web (a web shot after a drop of
+/// ten blocks hurt). Guests of a LAN world are never the owner.
+pub fn server_turn(host: &super::lan::LanHost, conn: u32) {
+    let owner = host.owner.as_ref().map(|o| o.uuid);
+    let own = owner.is_some() && host.hub.guests.iter().any(|g| g.conn == conn && Some(g.uuid) == owner);
+    horizon_client::motion::spider_man_fall::set(own && shared(|s| s.safe_fall));
+}
+
 /// After the state packet: the player's own on-ground value again.
 pub fn after_send_state(game: &mut super::Game<'_>) {
     if let Some(on_ground) = shared(|s| s.saved_on_ground.take())
