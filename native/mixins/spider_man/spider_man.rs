@@ -395,7 +395,7 @@ pub fn tick(game: &mut super::Game<'_>) {
 /// `fade / 40`, and the hook sets `fade`.
 fn wind(game: &mut super::Game<'_>, volume: f32) {
     use horizon_client::sound_engine::{
-        Attenuation, NEUTRAL, SoundEngine, SoundInstance, Sounds, Ticking,
+        Attenuation, NEUTRAL, SoundInstance, Sounds, Ticking,
     };
     let volume = if volume.is_finite() { volume.clamp(0.0, 0.5) } else { 0.0 };
     let playing = shared(|s| s.wind).filter(|id| game.audio.engine.instance(*id).is_some());
@@ -407,7 +407,7 @@ fn wind(game: &mut super::Game<'_>, volume: f32) {
                 NEUTRAL,
                 0.0,
                 1.0,
-                SoundEngine::unseeded(),
+                horizon_client::random_source::create(),
                 true,
                 0,
                 Attenuation::None,

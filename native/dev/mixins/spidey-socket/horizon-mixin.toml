@@ -1,10 +1,10 @@
 [mod]
 id = "spidey-socket"
-version = "0.2.3"
+version = "0.2.4"
 priority = 100
 
 [compatibility]
-horizon_revision = "e0c615b64365eb69e7508501b903bee374982b7d"
+horizon_revision = "fda084f641d64d6f9b051b6610b4cf95c65065a7"
 
 [[module]]
 id = "view-turn"
