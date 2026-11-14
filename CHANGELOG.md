@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.4 — 2026-11-14
 
+- On Horizon's Nightly of 2026-11-13 (`9f42064`), still with horizon-mixins `5a64af9`: 0.2.3 no longer compiled
+  there (the wind sound's random source moved).
 - A vault off a roof gives the fall back once its flip is done: WASD steers and a web can be shot on the way
   down (the whole drop used to follow the vault's line).
 
