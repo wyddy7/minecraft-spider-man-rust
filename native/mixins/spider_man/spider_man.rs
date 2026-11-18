@@ -12,22 +12,17 @@
 // the mod that are not finite are dropped, and a panic in it stops the mod for
 // that tick, not the game.
 
-use horizon_dev_reload::abi::{Camera, Input, Player, Pose, Ray, State, UiEvent, Vec3};
+use horizon_dev_reload::abi::{Camera, Input, Player, Pose, Ray, State, Vec3};
 use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::time::Instant;
 
 /// The mod's id in Options > Mods: its keys' lines and its switch.
 pub const ID: &str = "spider_man";
-/// Its row there.
-const TITLE: &str = "Spider-Man";
-const DESCRIPTION: &str = "Web swinging, zips, wall running and parkour. Hold R and jump; F5 for third person.";
 /// Rays cast a tick; the rest find nothing.
 const RAY_BUDGET: usize = 256;
 /// How far from the player a fixed camera may stand, in blocks.
 const FIXED_CAMERA_REACH: f64 = 16.0;
-/// The plug's chat commands, taken before the server sees them.
-const COMMANDS: [&str; 1] = ["swingmode"];
 /// The strongest shake: yaw and pitch, degrees.
 const SHAKE_DEGREES: (f32, f32) = (3.0, 2.0);
 /// The wall camera after Catlike Coding's orbit camera (Movement 04–06,
@@ -48,7 +43,6 @@ const RECENTER_PITCH: f32 = 15.0;
 const TURNED_PITCH: f32 = 80.0;
 
 struct Shared {
-    commands: Vec<(String, String)>,
     /// Last tick's pose and this tick's, blended per frame.
     poses: [Option<Pose>; 2],
     camera: Option<Camera>,
@@ -73,6 +67,9 @@ struct Shared {
     align_then: Option<Instant>,
     /// The hint line on the action bar as of last tick.
     hint: Option<String>,
+    /// The web delay last written to the mod's row in Options > Mods; None
+    /// until the first tick in the own world.
+    shown_delay: Option<f64>,
 }
 
 /// The web shot's sound: an event of the mod's own, registered at run time
@@ -84,7 +81,6 @@ const THWIP_SOUNDS: &[u8] =
 const THWIP_PITCH: f32 = 1.6;
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
-    commands: Vec::new(),
     poses: [None, None],
     camera: None,
     safe_fall: false,
@@ -99,6 +95,7 @@ static SHARED: Mutex<Shared> = Mutex::new(Shared {
     manual: None,
     align_then: None,
     hint: None,
+    shown_delay: None,
 });
 
 fn shared<T>(f: impl FnOnce(&mut Shared) -> T) -> T {
@@ -258,11 +255,15 @@ fn cast(game: &super::Game<'_>, rays: &[Ray], eye: [f64; 3], feet: [f64; 3]) -> 
 
 /// Every client tick, before the level ticks and the player moves.
 pub fn tick(game: &mut super::Game<'_>) {
+    // The mod's `command` hook takes `/swingmode` only in the own world;
+    // elsewhere the server gets it, as always.
+    ::spider_man::set_own_world(local(game));
     // Turned off in Options > Mods: the game as if the mod weren't there.
-    if !game.native_on(ID) {
+    if !on(game) {
         shared(|s| {
             clear(s);
-            s.commands.clear();
+            // Switched back on: the row and the mod are matched again.
+            s.shown_delay = None;
         });
         wind(game, 0.0);
         return;
@@ -276,7 +277,11 @@ pub fn tick(game: &mut super::Game<'_>) {
         } else {
             Vec::new()
         },
-        commands: shared(|s| std::mem::take(&mut s.commands)),
+        commands: if local {
+            first_delay(game).into_iter().chain(::spider_man::take_commands()).collect()
+        } else {
+            Vec::new()
+        },
         bindings: bindings(game),
         ..Input::default()
     };
@@ -304,6 +309,7 @@ pub fn tick(game: &mut super::Game<'_>) {
             ..Player::default()
         });
     }
+    let had_commands = !input.commands.is_empty();
     let Some(out) = horizon_dev_reload::tick(&input) else {
         shared(clear);
         wind(game, 0.0);
@@ -313,6 +319,9 @@ pub fn tick(game: &mut super::Game<'_>) {
         game.system_message(horizon_client::text::Text::literal(line));
     }
     let current = horizon_dev_reload::current();
+    if local {
+        show_delay(game, had_commands);
+    }
     // The sound of a web or a zip line shot this tick. The event is added
     // again if a resource reload dropped it.
     if out.web_shot
@@ -322,7 +331,10 @@ pub fn tick(game: &mut super::Game<'_>) {
         if !game.audio.engine.registry.contains(THWIP) {
             game.audio.engine.registry.add_file(ID, THWIP_SOUNDS, &|_, _| true);
         }
-        game.native_play_local_sound(THWIP, eye, 0.9, THWIP_PITCH, 0);
+        let mut sound = mod_api::SoundPlay::at(THWIP, mod_api::SoundSource::Players, eye);
+        sound.volume = 0.9;
+        sound.pitch = THWIP_PITCH;
+        let _ = game.play_local_sound(&sound, 0);
     }
     // The mod's panel is one line, its hint for a first web: shown as the
     // action bar for as long as the mod keeps it, with `{name}` of each of
@@ -336,7 +348,7 @@ pub fn tick(game: &mut super::Game<'_>) {
         .filter(|_| local && playing)
         .map(|(line, _)| {
             current.keys.iter().fold(line.clone(), |line, k| {
-                let key = game.native_mod_key(ID, &k.name, &k.default);
+                let key = mod_key(game, &k.name, &k.default);
                 let label = horizon_client_core::key_display::display_name(&key).plain();
                 line.replace(&format!("{{{}}}", k.name), &label)
             })
@@ -454,11 +466,17 @@ pub fn before_send_state(game: &mut super::Game<'_>) {
 /// ten blocks hurt). Guests of a LAN world are never the owner.
 pub fn server_turn(host: &super::lan::LanHost, conn: u32) {
     let owner = host.owner.as_ref().map(|o| o.uuid);
-    let own = owner.is_some() && host.hub.guests.iter().any(|g| g.conn == conn && Some(g.uuid) == owner);
+    // The owner's player, as the server numbers its entities: only its fall is forgotten.
+    let entity = host
+        .hub
+        .guests
+        .iter()
+        .find(|g| g.conn == conn && owner.is_some() && Some(g.uuid) == owner)
+        .map(|g| g.entity_id as u32);
     // The packets this turn reads may predate a web that has just ended: an
     // on-ground packet since the last turn counts too.
-    let forget = own && shared(|s| std::mem::take(&mut s.server_safe) || s.safe_fall);
-    horizon_client::motion::spider_man_fall::set(forget);
+    let forget = entity.is_some() && shared(|s| std::mem::take(&mut s.server_safe) || s.safe_fall);
+    ::spider_man::fall_gate::set(entity.filter(|_| forget));
 }
 
 /// After the state packet: the player's own on-ground value again.
@@ -470,24 +488,55 @@ pub fn after_send_state(game: &mut super::Game<'_>) {
     }
 }
 
-/// The mod's chat commands (`/swingmode …`, typed or clicked, without the
-/// slash) go to the mod, not the server, in the player's own world only;
-/// elsewhere the server gets them as always.
-pub fn command(game: &mut super::Game<'_>, command: &str, ran: &mut bool) {
-    let command = command.trim();
-    let (name, args) = command.split_once(' ').unwrap_or((command, ""));
-    if !COMMANDS.contains(&name) || !game.native_on(ID) || horizon_dev_reload::loads() == 0 || !local(game) {
-        return;
+/// At the first tick in the own world, a delay the player set on the mod's row
+/// while the mod wasn't listening (on the title screen, on another server, with
+/// the mod off) goes to the mod, quietly: the row's own value wins. A row that
+/// was never set is written from the mod's delay instead (`show_delay`).
+fn first_delay(game: &super::Game<'_>) -> Option<(String, String)> {
+    if shared(|s| s.shown_delay.is_some()) {
+        return None;
     }
-    shared(|s| s.commands.push((name.to_owned(), args.trim().to_owned())));
-    *ran = true;
+    let row = game
+        .setting(ID, "web_delay")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|d| d.is_finite() && (0.0..=2.0).contains(d))?;
+    if kept_delay() == Some(row) {
+        return None;
+    }
+    Some(("swingmode".into(), format!("delay {row} quiet")))
 }
 
-/// The chat box lists, colours and completes the mod's commands.
-pub fn commands(game: &super::Game<'_>, commands: &mut Vec<&'static str>) {
-    if game.native_on(ID) && horizon_dev_reload::loads() > 0 && local(game) {
-        commands.extend(COMMANDS);
+/// The delay the mod keeps in its `settings` file, if it kept one.
+fn kept_delay() -> Option<f64> {
+    horizon_mod_sdk::storage::get("settings").and_then(|bytes| {
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .find_map(|l| l.strip_prefix("delay=").and_then(|v| v.trim().parse::<f64>().ok()))
+    })
+}
+
+/// The mod's row in Options > Mods shows the web delay the mod keeps (its
+/// `settings` file): at the first tick in the own world, and after a command
+/// (`/swingmode delay`, or the row itself) may have changed it. Writing the
+/// row doesn't tell the mod again (`set_setting` fires no `setting_changed`).
+fn show_delay(game: &super::Game<'_>, changed: bool) {
+    if !changed && shared(|s| s.shown_delay.is_some()) {
+        return;
     }
+    let delay = kept_delay().filter(|d| d.is_finite()).unwrap_or(1.0).clamp(0.0, 2.0);
+    if shared(|s| s.shown_delay.replace(delay)) != Some(delay) {
+        game.set_setting(ID, "web_delay", &format!("{delay}"));
+    }
+}
+
+/// Whether the player left the mod on in Options > Mods.
+fn on(game: &super::Game<'_>) -> bool {
+    !game.settings.mods.disabled.contains(ID)
+}
+
+/// The key the player bound the mod's key `name` to in Controls (`key.keyboard.r`), else `default`.
+fn mod_key(game: &super::Game<'_>, name: &str, default: &str) -> String {
+    game.mod_key(ID, name).map_or_else(|| default.to_owned(), |(key, _)| key)
 }
 
 /// The player's key for each of the mod's keys (its page in Options > Mods),
@@ -499,70 +548,20 @@ fn bindings(game: &super::Game<'_>) -> Vec<(String, String)> {
         .keys
         .iter()
         .map(|k| {
-            let name = game.native_mod_key(ID, &k.name, &k.default);
+            let name = mod_key(game, &k.name, &k.default);
             let key = horizon_client_input::keybinds::key_code(&name).map_or(name, |code| format!("{code:?}"));
             (k.name.clone(), key)
         })
         .collect()
 }
 
-/// The settings page only: the mod starts if it hasn't (its keys and
-/// buttons are known from then on) and takes `ui`, without a tick.
-fn page(game: &super::Game<'_>, ui: Vec<UiEvent>) {
-    let input = Input {
-        tick: game.ticks,
-        bindings: bindings(game),
-        ui,
-        ui_only: true,
-        ..Input::default()
-    };
-    let _ = horizon_dev_reload::tick(&input);
-}
-
-/// The mod's row in Options > Mods, with its keys.
-pub fn listed(game: &super::Game<'_>, mods: &mut Vec<super::native_hooks::NativeMod>) {
-    if horizon_dev_reload::current().keys.is_empty() {
-        page(game, Vec::new());
-    }
-    mods.push(super::native_hooks::NativeMod {
-        id: ID.into(),
-        title: TITLE.into(),
-        description: DESCRIPTION.into(),
-        keys: horizon_dev_reload::current()
-            .keys
-            .into_iter()
-            .map(|k| [k.name, k.label, k.default])
-            .collect(),
-    });
-}
-
-/// The mod's settings page: its buttons, as the mod labels them now.
-pub fn settings(game: &super::Game<'_>, mod_id: &str, buttons: &mut Vec<String>) {
-    if mod_id != ID {
-        return;
-    }
-    page(game, vec![UiEvent::Opened]);
-    buttons.extend(horizon_dev_reload::current().settings.into_iter().map(|b| b.label));
-}
-
-/// A click on the page's `button`-th button: the mod changes and keeps the
-/// setting, and the page asks for the new labels right after.
-pub fn settings_click(game: &super::Game<'_>, mod_id: &str, button: usize) {
-    if mod_id != ID {
-        return;
-    }
-    if let Some(b) = horizon_dev_reload::current().settings.get(button) {
-        page(game, vec![UiEvent::Select(b.id)]);
-    }
-}
-
 /// The mod's camera shake, added to the other mods' (Horizon scales the sum
 /// by Distortion Effects and bounds it).
-pub fn camera_shake(game: &super::Game<'_>, shake: &mut super::native_hooks::NativeShake) {
+pub fn camera_shake(game: &super::Game<'_>, shake: &mut mod_api::Shake) {
     // Only on the mod's chase camera, as the rumble always was: not in first
     // person nor on a fixed view.
     let chase = shared(|s| matches!(s.camera, Some(Camera::Chase(_))));
-    if !chase || game.camera_type.first_person() || !game.native_on(ID) || !local(game) {
+    if !chase || game.camera_type.is_first_person() || !on(game) || !local(game) {
         return;
     }
     let (yaw, pitch) = shake_offset();
@@ -579,7 +578,7 @@ pub fn rope_geometry(
     out: &mut Vec<horizon_client::mesher::Vertex>,
 ) {
     let ropes = horizon_dev_reload::current().ropes;
-    let Some(p) = game.player.as_ref().filter(|_| !ropes.is_empty() && game.native_on(ID) && local(game)) else {
+    let Some(p) = game.player.as_ref().filter(|_| !ropes.is_empty() && on(game) && local(game)) else {
         return;
     };
     let white = game.gui.atlas.font.white();
@@ -690,13 +689,13 @@ pub fn player_model(
     // Where the game itself would not draw the model (first person, spectator,
     // invisible), or not our world: the game decides as always.
     // (The player's effects are kept under bare ids; both spellings checked.)
-    if game.camera_type.first_person()
+    if game.camera_type.is_first_person()
         || game.spectator()
         || ["invisibility", "minecraft:invisibility"]
             .iter()
             .any(|id| game.potions.effects.get(*id).is_some())
         || game.player.as_ref().is_none_or(|p| p.health.dead_or_dying())
-        || !game.native_on(ID)
+        || !on(game)
         || !local(game)
     {
         return ControlFlow::Continue(());
@@ -794,7 +793,7 @@ fn wall_turn(_game: &super::Game<'_>) -> glam::DQuat {
 /// identity again, so the game's own angles are the view.
 fn update_align(game: &mut super::Game<'_>, wall: Option<glam::DVec3>, dt: f64) -> glam::DQuat {
     let to_up = match wall {
-        Some(w) if !game.camera_type.first_person() => -w,
+        Some(w) if !game.camera_type.is_first_person() => -w,
         _ => glam::DVec3::Y,
     };
     let (align, twist) = shared(|s| {
@@ -920,7 +919,7 @@ pub fn camera_view(
     game: &mut super::Game<'_>,
     partial: f32,
 ) -> ControlFlow<Option<(glam::DVec3, f32, f32)>> {
-    horizon_client_render::camera::spider_man_view::set(None);
+    ::spider_man::view_turn::set(None);
     let look_from = |from: glam::DVec3, to: glam::DVec3| {
         let d = (to - from).normalize_or_zero();
         let yaw = (-d.x).atan2(d.z).to_degrees() as f32;
@@ -943,7 +942,7 @@ pub fn camera_view(
             ControlFlow::Break(Some(look_from(near(&f.at), near(&f.look_at))))
         }
         Camera::Chase(c) => {
-            if game.camera_type.first_person() {
+            if game.camera_type.is_first_person() {
                 drop_align();
                 return ControlFlow::Continue(());
             }
@@ -1048,7 +1047,7 @@ pub fn camera_view(
                 // render crate's `view_matrix` gives the turned view for them.
                 let (at, yaw, pitch) = look_from(at, at + look);
                 let q = glam::Quat::from_mat3(&basis);
-                horizon_client_render::camera::spider_man_view::set(q.is_finite().then(|| (yaw, pitch, q.to_array())));
+                ::spider_man::view_turn::set(q.is_finite().then(|| (yaw, pitch, q.to_array())));
                 (at, yaw, pitch)
             } else {
                 (at, yaw, pitch)
@@ -4285,7 +4284,11 @@ pub mod spiderman {
                 return Ok(Some(format!("Pose held: {}", rest.trim())));
             }
             if let Some(rest) = args.trim().strip_prefix("delay") {
-                let rest = rest.trim();
+                // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
+                let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
+                    Some(r) => (r.trim(), true),
+                    None => (rest.trim(), false),
+                };
                 if !rest.is_empty() {
                     let k: f64 = rest
                         .parse()
@@ -4294,6 +4297,9 @@ pub mod spiderman {
                         .ok_or_else(|| format!("/swingmode delay 0..2 (1 = full, 0.5 = half), not {rest}"))?;
                     self.spidey.web_delay = k;
                     self.save_settings();
+                    if quiet {
+                        return Ok(None);
+                    }
                 }
                 return Ok(Some(format!(
                     "Web flight before it bites: {:.2} of full (/swingmode delay 0..2)",

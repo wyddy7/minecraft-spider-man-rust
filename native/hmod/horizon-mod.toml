@@ -1,0 +1,130 @@
+id = "spider_man"
+name = "Spider-Man"
+version = "0.2.5"
+description = "Web swinging, zips, wall running and parkour."
+authors = ["wyddy7"]
+api = "0.2"
+side = "client"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+
+[[native.module]]
+id = "socket"
+file = "crates/horizon-client/src/game.rs"
+name = "spider_man"
+source = "src/game/spider_man.rs"
+
+[[native.mixin]]
+id = "before-level-tick"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::tick_remote"
+helper = "src/game/tick.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "before-send-state"
+kind = "HEAD"
+target = "horizon_client::game::remote::Game<'_>::remote_send_state"
+helper = "src/game/send_state.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "after-send-state-0"
+kind = "AFTER_CALL"
+target = "horizon_client::game::remote::Game<'_>::tick_remote_player"
+selector = "self.remote_send_state"
+result = "()"
+require = 1
+ordinal = 0
+helper = "src/game/send_state_end.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "after-send-state-1"
+kind = "AFTER_CALL"
+target = "horizon_client::game::remote::Game<'_>::tick_local_player"
+selector = "self.remote_send_state"
+result = "()"
+require = 1
+ordinal = 0
+helper = "src/game/send_state_end.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+]
+
+[[native.mixin]]
+id = "server-turn"
+kind = "HEAD"
+target = "horizon_client::game::prediction::Game<'_>::guest_replay"
+helper = "src/game/server_turn.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "conn", ty = "u32", value = "conn" },
+]
+
+[[native.mixin]]
+id = "plug-ropes"
+kind = "HEAD"
+target = "horizon_client::game::leads::Game<'_>::leash_geometry"
+helper = "src/game/ropes.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<horizon_client::mesher::Vertex>", value = "&mut *out" },
+]
+
+[[native.mixin]]
+id = "posed-player"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::player_model_geometry"
+helper = "src/game/model.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "camera", ty = "glam::DVec3", value = "camera" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&mut Vec<horizon_client::mesher::Vertex>", value = "&mut *out" },
+]
+
+[[native.mixin]]
+id = "plug-camera"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::perspective::Game<'_>::camera_view"
+helper = "src/game/camera.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "partial", ty = "f32", value = "partial" },
+]
+
+[[native.mixin]]
+id = "turned-view"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client_render::camera::view_matrix"
+helper = "src/game/view.rs"
+bindings = [
+  { name = "yaw", ty = "f32", value = "yaw" },
+  { name = "pitch", ty = "f32", value = "pitch" },
+]
+
+[[native.mixin]]
+id = "camera-shake"
+kind = "HEAD"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_camera_shake"
+helper = "src/game/shake.rs"
+bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
+  { name = "shake", ty = "&mut mod_api::Shake", value = "&mut *shake" },
+]
