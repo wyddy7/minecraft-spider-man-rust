@@ -1,30 +1,16 @@
 [mod]
 id = "spider_man"
-version = "0.2.4"
+version = "0.2.5"
 priority = 100
 
 [compatibility]
-horizon_revision = "9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0"
-
-[[module]]
-id = "view-turn"
-file = "crates/horizon-client-render/src/camera.rs"
-name = "spider_man_view"
-source = "view_turn.rs"
-visibility = "pub"
+horizon_revision = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
 
 [[module]]
 id = "socket"
 file = "crates/horizon-client/src/game.rs"
 name = "spider_man"
 source = "spider_man.rs"
-
-[[module]]
-id = "fall-gate"
-file = "crates/horizon-client/src/motion.rs"
-name = "spider_man_fall"
-source = "fall_gate.rs"
-visibility = "pub"
 
 [[injection]]
 id = "before-level-tick"
@@ -41,32 +27,38 @@ helper = "send_state.rs"
 bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
 
 [[injection]]
-id = "after-send-state"
-kind = "HEAD"
-# remote_send_state's own RETURN can't be hooked (a nested item in its body): the
-# next thing tick_remote runs after the state packet is tick_own_rockets.
-target = "horizon_client::game::remote_projectiles::Game<'_>::tick_own_rockets"
+id = "after-send-state-0"
+kind = "AFTER_CALL"
+# Right after the state packet (two callers send it): remote_send_state's own
+# RETURN can't be hooked (a nested item in its body).
+target = "horizon_client::game::remote::Game<'_>::tick_remote_player"
+selector = "self.remote_send_state"
+result = "()"
+require = 1
+ordinal = 0
 helper = "send_state_end.rs"
 bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
 
 [[injection]]
+id = "after-send-state-1"
+kind = "AFTER_CALL"
+target = "horizon_client::game::remote::Game<'_>::tick_local_player"
+selector = "self.remote_send_state"
+result = "()"
+require = 1
+ordinal = 0
+helper = "send_state_end.rs"
+bindings = [{ name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" }]
+[[injection]]
 id = "server-turn"
 kind = "HEAD"
-target = "horizon_client::game::lan_actions::Game<'_>::guest_server_tick"
+# The first thing a player's turn on the server does (guest_server_tick itself
+# can't be patched: a macro in its body).
+target = "horizon_client::game::prediction::Game<'_>::guest_replay"
 helper = "server_turn.rs"
 bindings = [
-  { name = "host", ty = "&crate::game::lan::LanHost", value = "&*host" },
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "conn", ty = "u32", value = "conn" },
-]
-
-[[injection]]
-id = "web-forgets-fall"
-kind = "HEAD"
-target = "horizon_client::motion::<MotionWorld<'_,'_,'_> as EntityMoveWorld>::check_fall_damage"
-helper = "fall.rs"
-bindings = [
-  { name = "w", ty = "&mut crate::motion::MotionWorld<'_, '_, '_>", value = "&mut *self" },
-  { name = "dy", ty = "f64", value = "dy" },
 ]
 
 [[injection]]
@@ -119,64 +111,11 @@ bindings = [
 # Horizon's native hook points (stable across releases): commands, the mod's
 # row and settings page in Options > Mods, its keys, the camera shake.
 [[injection]]
-id = "command"
-kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_command"
-helper = "command.rs"
-bindings = [
-  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
-  { name = "command", ty = "&str", value = "command" },
-  { name = "ran", ty = "&mut bool", value = "&mut *ran" },
-]
-
-[[injection]]
-id = "commands"
-kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_commands"
-helper = "commands.rs"
-bindings = [
-  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
-  { name = "commands", ty = "&mut Vec<&'static str>", value = "&mut *commands" },
-]
-
-[[injection]]
-id = "listed"
-kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_mods"
-helper = "listed.rs"
-bindings = [
-  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
-  { name = "mods", ty = "&mut Vec<crate::game::native_hooks::NativeMod>", value = "&mut *mods" },
-]
-
-[[injection]]
-id = "settings"
-kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_settings"
-helper = "settings.rs"
-bindings = [
-  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
-  { name = "mod_id", ty = "&str", value = "mod_id" },
-  { name = "buttons", ty = "&mut Vec<String>", value = "&mut *buttons" },
-]
-
-[[injection]]
-id = "settings-click"
-kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_settings_click"
-helper = "settings_click.rs"
-bindings = [
-  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
-  { name = "mod_id", ty = "&str", value = "mod_id" },
-  { name = "button", ty = "usize", value = "button" },
-]
-
-[[injection]]
 id = "camera-shake"
 kind = "HEAD"
-target = "horizon_client::game::native_hooks::Game<'_>::native_camera_shake"
+target = "horizon_client::game::native_hooks::base::Game<'_>::native_camera_shake"
 helper = "shake.rs"
 bindings = [
   { name = "game", ty = "&crate::game::Game<'_>", value = "self" },
-  { name = "shake", ty = "&mut crate::game::native_hooks::NativeShake", value = "&mut *shake" },
+  { name = "shake", ty = "&mut mod_api::Shake", value = "&mut *shake" },
 ]

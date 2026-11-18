@@ -539,7 +539,11 @@ impl Mod for Swing {
             return Ok(Some(format!("Pose held: {}", rest.trim())));
         }
         if let Some(rest) = args.trim().strip_prefix("delay") {
-            let rest = rest.trim();
+            // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
+            let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
+                Some(r) => (r.trim(), true),
+                None => (rest.trim(), false),
+            };
             if !rest.is_empty() {
                 let k: f64 = rest
                     .parse()
@@ -548,6 +552,9 @@ impl Mod for Swing {
                     .ok_or_else(|| format!("/swingmode delay 0..2 (1 = full, 0.5 = half), not {rest}"))?;
                 self.spidey.web_delay = k;
                 self.save_settings();
+                if quiet {
+                    return Ok(None);
+                }
             }
             return Ok(Some(format!(
                 "Web flight before it bites: {:.2} of full (/swingmode delay 0..2)",

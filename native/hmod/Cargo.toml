@@ -1,0 +1,13 @@
+[package]
+name = "spider_man"
+version = "0.2.5"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
+
+# Its own workspace: the repository's workspaces above it are the development setup.
+[workspace]

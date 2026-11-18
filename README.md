@@ -44,7 +44,7 @@ A chase camera follows the swing and shakes at speed; the wind gets louder the f
 don't hurt.
 
 R and Z can be changed, and the web delay set (how long a web flies before it bites), on the mod's page:
-Options > Mods > Spider-Man > Settings. The same page turns the mod off. Chat: `/swingmode on|off`, `delay 0..2`,
+Options > Mods > Spider-Man > Config (R and Z also in Controls). The Mods page turns the mod off. Chat: `/swingmode on|off`, `delay 0..2`,
 `view side|front|back|off` (a fixed camera for looking at the poses) and `debug` (what the mod sees).
 
 It plays in single player and in a LAN world you host. On someone else's server it does nothing: it only moves the
@@ -52,7 +52,7 @@ player where the server is yours. A city map makes the most of it; for the look,
 
 ## Status
 
-0.2.4: the native build has everything above, on Horizon's Nightly of 2026-11-13. Multiplayer on servers is the
+0.2.5: the native build has everything above, as a `.hmod` on Horizon's Nightly of 2026-11-18 (launcher 0.2.70 or later). Multiplayer on servers is the
 plan, the way movement mods do it: the server runs the mod too and lets its players swing.
 
 ## For mod authors
@@ -69,13 +69,13 @@ that goes past the template's one hook; things it shows that aren't written down
   changes. Edit, save, and the running game has it in about a second. The shipped bundle compiles the same logic in.
 - **Porting a WebAssembly mod unchanged.** A facade with the mod SDK's names serves the SDK calls from the hooks'
   data, so the existing `src/` builds as either.
-- **Hook targets that work.** horizon-mixins' rules (no HEAD over a body with a macro, no BEFORE_CALL in one with
-  `?`, no RETURN in one with a closure) rule out many of the game's obvious functions, the level tick and the
-  model animation among them. [native/README.md](native/README.md#hooks) lists the Horizon functions this mod
+- **Hook targets that work.** A function whose body has an ambiguous macro, a `cfg` or a nested item can't be
+  patched, which rules out many of the game's obvious ones (a player's server turn, `remote_send_state`'s return);
+  the launcher's function index (`functions.json`) lists the ones that can. [native/README.md](native/README.md#hooks) lists the Horizon functions this mod
   hooks and what each hook does.
-- **Turning the whole view.** The view matrix is built in Horizon's render crate, which the game's library
-  depends on. A bundle can add a `pub` module to a library file there (`horizon-client-render/src/camera.rs`) and
-  a cancellable HEAD on `view_matrix`: the game side stores the frame's yaw, pitch and turned orientation, and the
+- **Turning the whole view.** The view matrix is built in Horizon's render crate, below the game's own. A
+  cancellable HEAD on `view_matrix` (marked replaceable there) reads the turn from the mod's own crate, which every
+  patched function can call: the game side stores the frame's yaw, pitch and turned orientation, and the
   hook returns the turned view for exactly those angles, so the world, its culling, the sky and reflections turn
   together while previews and other cameras stay as they are.
 - **Your own world, not someone else's server.** Checking the connection's address isn't enough; the mod also
@@ -85,12 +85,12 @@ that goes past the template's one hook; things it shows that aren't written down
 - **Sound.** Horizon updates a playing sound's volume only for ticking sounds: a loop whose loudness follows speed
   has to be one.
 
-Horizon's stable hook points for native mods (`native_hooks.rs`) carry what they can: the chat commands, the mod's
-row and settings page in Options > Mods with its rebindable keys, the on/off switch and the camera shake. Movement,
-the camera, the fall and drawing in the world have no hook point, so they are the mod's own hooks, and the mod pins
-one Horizon commit.
+Horizon's mod API carries what it can: the keys in Controls, `/swingmode`, the web delay on the mod's page in
+Options > Mods, and the fall while a web holds (its `living_fall` hook, for your own player only). Movement, the
+camera and drawing in the world have no hook, so they are the mod's own patches of game functions, and the mod
+pins one Horizon build.
 
-How to build both bundles, the development loop and the hook list: [native/README.md](native/README.md).
+How to build the `.hmod`, the development loop and the hook list: [native/README.md](native/README.md).
 
 ## WebAssembly build (0.1.0)
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.5 — 2026-11-18
+
+- A `.hmod`, the native mod format of launchers 0.2.70 and later, which no longer load `.hnmod`. On Horizon's
+  Nightly of 2026-11-18 (`0b14f8a`) and horizon-mixins `e59da90`.
+- R and Z are in Controls with the game's own keys; the web delay is a slider on the mod's page (Options > Mods >
+  Spider-Man > Config) and follows `/swingmode delay`; `/swingmode` is taken by the mod in your own world only.
+- The fall is still forgotten while a web holds, through Horizon's fall hook and only for your own player: mobs
+  and other players landing at the same moment are hurt as always.
+
 ## 0.2.4 — 2026-11-14
 
 - On Horizon's Nightly of 2026-11-13 (`9f42064`), still with horizon-mixins `5a64af9`: 0.2.3 no longer compiled
