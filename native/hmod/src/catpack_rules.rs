@@ -40,11 +40,24 @@ enum Bag {
     Holding(Compound),
 }
 
-/// The stack's `custom_data`, if it is a cat backpack.
+/// What the stack is to the rules, if it is a cat backpack: one that says so in its
+/// `custom_data`, or the mod's own item as it is made (no data yet: empty).
 fn bag(stack: &ItemStack) -> Option<Bag> {
-    let id = mod_api::ComponentId::new("minecraft:custom_data")?;
-    let Tag::Compound(custom) = mod_api::ItemResource::of(stack).component(&id)? else { return None };
-    custom.get(&"catpack".into())?;
+    let read = |name: &str| mod_api::ItemResource::of(stack).component(&mod_api::ComponentId::new(name)?);
+    let custom = match read("minecraft:custom_data") {
+        Some(Tag::Compound(custom)) if custom.contains_key(&"catpack".into()) => custom,
+        other => {
+            if !crate::catpack::is_bag_item(stack) {
+                return None;
+            }
+            let mut custom = match other {
+                Some(Tag::Compound(custom)) => custom,
+                _ => Compound::default(),
+            };
+            custom.insert("catpack".into(), Tag::String("empty".into()));
+            custom
+        }
+    };
     Some(if custom.contains_key(&"catpack_data".into()) { Bag::Holding(custom) } else { Bag::Empty(custom) })
 }
 
@@ -162,11 +175,19 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
     let click = event.click;
     let stack = click.stack?;
     let Bag::Holding(mut custom) = bag(stack)? else { return None };
-    let HostSide::Server(host) = host else { return None };
     // Once a click: before the block has its say.
     if event.phase != mod_api::UsePhase::ItemBeforeBlock {
         return None;
     }
+    let host = match host {
+        HostSide::Server(host) => host,
+        // The client says the click is taken where the server will let the cat out, so it
+        // doesn't go on to use the item as well (which would put the emptied bag on the back).
+        HostSide::Client(host) => {
+            let sneaking = host.local_player().is_some_and(|p| p.entity().is_shift_key_down(host) == Some(true));
+            return (sneaking && click.hit.face == [0, 1, 0]).then_some(InteractionResult::Success);
+        }
+    };
     let player = match host.players().acting_player() {
         Some(player) => player,
         None => host.players().server_players().into_iter().find(|p| p.uuid() == click.player)?,
@@ -255,6 +276,13 @@ pub fn grow(host: &mut dyn ServerHost, player: PlayerRef) {
 pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
     let HostSide::Server(host) = host else { return };
     let level = event.level;
+    if !crate::catpack::learnt() {
+        for player in level.online_players(host).unwrap_or_default() {
+            for (_, stack) in player.inventory_slots(host).unwrap_or_default() {
+                crate::catpack::learn(host, &stack);
+            }
+        }
+    }
     let mut ticks = TICKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if ticks.len() > 64 {
         ticks.clear();

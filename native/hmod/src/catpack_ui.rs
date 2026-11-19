@@ -166,7 +166,7 @@ pub fn draw(host: &dyn ClientHost, draw: &mut dyn DrawContext, mouse: [f32; 2]) 
     draw.fill([ox, oy, 2.0, HEIGHT], 0xFFFF_FFFF);
     draw.fill([ox, oy + HEIGHT - 2.0, WIDTH, 2.0], 0xFF55_5555);
     draw.fill([ox + WIDTH - 2.0, oy, 2.0, HEIGHT], 0xFF55_5555);
-    draw.text("Cat backpack", [ox + 8.0, oy + 6.0], 0xFF40_4040, false);
+    draw.text("Back catpack", [ox + 8.0, oy + 6.0], 0xFF40_4040, false);
     draw.text("Inventory", [ox + 8.0, oy + 75.0], 0xFF40_4040, false);
     let over = hovered(size, mouse);
     for (cell, [x, y]) in cells() {

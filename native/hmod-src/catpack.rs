@@ -90,12 +90,55 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The test bags `/catpack give` hands out: black bundles worn in the chest slot, drawn as the bag
-/// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown cat, empty.
+/// The bag's item id.
+pub const ITEM: &str = "spider_man:cat_backpack";
+
+/// The bag's item as this run of the game knows it: learnt from the first stack of it seen with
+/// a host at hand (an item's id is the host's to say), so that a stack can be told a bag
+/// without one.
+static BAG_ITEM: std::sync::OnceLock<mod_api::ItemKey> = std::sync::OnceLock::new();
+
+/// Looks at `stack` for the bag's item.
+pub fn learn(host: &dyn mod_api::Host, stack: &mod_api::ItemStack) {
+    if BAG_ITEM.get().is_none() && stack.item().id(host) == ITEM {
+        let _ = BAG_ITEM.set(stack.item());
+    }
+}
+
+/// Whether the bag's item is known yet.
+pub fn learnt() -> bool {
+    BAG_ITEM.get().is_some()
+}
+
+/// Whether the stack is the mod's own bag item.
+pub fn is_bag_item(stack: &mod_api::ItemStack) -> bool {
+    BAG_ITEM.get() == Some(&stack.item())
+}
+
+/// The bag as an item of the mod's own: one to a stack, fire-proof (a cat is not lost to one
+/// slip into lava), born empty (a bag with no `custom_data` of its own is an empty one). It is its own item so that nothing of the game's takes it for
+/// something else: no recipe, no trade, no use of a vanilla item it might have been made of.
+pub fn item() -> mod_api::Item {
+    use mod_api::Tag;
+    let mut item = mod_api::Item::new(ITEM, "minecraft:clock");
+    item.max_stack_size = Some(1);
+    let mut fire = mod_api::Compound::default();
+    fire.insert("types".into(), Tag::String("#minecraft:is_fire".into()));
+    item.components = vec![
+        ("minecraft:item_model".into(), Some(Tag::String("spider_man:catpack".into()))),
+        ("minecraft:item_name".into(), Some(Tag::String("Back catpack".into()))),
+        ("minecraft:damage_resistant".into(), Some(Tag::Compound(fire))),
+    ];
+    item
+}
+
+/// The test bags `/catpack give` hands out, drawn as the bag
+/// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown
+/// cat, empty. A cat given this way is only a picture: it has no cat's data to let out.
 pub const GIVE: [&str; 3] = [
-    r##"/give @s minecraft:black_bundle[minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"##,
-    r##"/give @s minecraft:black_bundle[minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"##,
-    r##"/give @s minecraft:black_bundle[minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"empty"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"##,
+    r#"/give @s spider_man:cat_backpack[custom_data={catpack:"kitten",catpack_cat:"red"},item_model="spider_man:catpack_kitten_red"]"#,
+    r#"/give @s spider_man:cat_backpack[custom_data={catpack:"cat",catpack_cat:"red"},item_model="spider_man:catpack_cat_red"]"#,
+    r#"/give @s spider_man:cat_backpack"#,
 ];
 
 /// What `/catpack …` asks for.
@@ -112,7 +155,7 @@ pub fn command(args: &str) -> Command {
     let mut words = args.split_whitespace();
     let Some(first) = words.next() else {
         let on = !FORCED.fetch_xor(true, Ordering::Relaxed);
-        return Command::Say(format!("Cat backpack on every player: {}", if on { "on" } else { "off" }));
+        return Command::Say(format!("Back catpack on every player: {}", if on { "on" } else { "off" }));
     };
     if first == "give" {
         let lines = GIVE.iter().map(|s| (*s).to_owned()).collect();
@@ -120,7 +163,7 @@ pub fn command(args: &str) -> Command {
     }
     if let Some(kind) = Kind::parse(first) {
         let variant = words.next().filter(|v| VARIANTS.contains(v)).unwrap_or("red").to_owned();
-        let line = format!("Cat backpack on every player: {first}, {variant}");
+        let line = format!("Back catpack on every player: {first}, {variant}");
         *lock(&FORCED_WORN) = Some(Worn { kind, variant });
         FORCED.store(true, Ordering::Relaxed);
         return Command::Say(line);
@@ -253,6 +296,13 @@ fn kitten(head: ModelPart) -> ModelPart {
 
 /// Each client tick: which bag the local player wears, read from their chest slot.
 pub fn tick(host: &dyn mod_api::ClientHost) {
+    if !learnt()
+        && let Some(player) = host.local_player()
+    {
+        for stack in player.inventory(host).unwrap_or_default() {
+            learn(host, &stack);
+        }
+    }
     // The players drawn since the last tick, and this window's own.
     let mut ids = std::mem::take(&mut *lock(&SEEN));
     if let Some(player) = host.local_player() {
@@ -286,13 +336,18 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
 
 /// The bag a stack is, by its `custom_data`: `catpack` names the kind, `catpack_cat` the variant.
 fn worn_by(stack: &mod_api::ItemStack) -> Option<Worn> {
-    let id = mod_api::ComponentId::new("minecraft:custom_data")?;
-    let data = mod_api::ItemResource::of(stack).component(&id)?;
-    let text = |key: &str| match data.get(key) {
+    let read = |name: &str| mod_api::ItemResource::of(stack).component(&mod_api::ComponentId::new(name)?);
+    let data = read("minecraft:custom_data");
+    let text = |key: &str| match data.as_ref()?.get(key) {
         Some(mod_api::Tag::String(s)) => Some(s.to_string_lossy()),
         _ => None,
     };
-    let kind = Kind::parse(&text("catpack")?)?;
+    let kind = match text("catpack") {
+        Some(named) => Kind::parse(&named)?,
+        // The mod's own item, as it is made: no data of its own yet.
+        None if is_bag_item(stack) => Kind::Empty,
+        None => return None,
+    };
     let variant = text("catpack_cat").filter(|v| VARIANTS.contains(&v.as_str())).unwrap_or_else(|| "red".into());
     Some(Worn { kind, variant })
 }

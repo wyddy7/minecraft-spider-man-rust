@@ -12,17 +12,7 @@
     "C": "minecraft:chest"
   },
   "result": {
-    "id": "minecraft:black_bundle",
-    "count": 1,
-    "components": {
-      "minecraft:damage_resistant": {
-        "types": "#minecraft:is_fire"
-      },
-      "minecraft:custom_data": {
-        "catpack": "empty"
-      },
-      "minecraft:item_model": "spider_man:catpack",
-      "minecraft:item_name": "Cat backpack"
-    }
+    "id": "spider_man:cat_backpack",
+    "count": 1
   }
 }

@@ -80,6 +80,11 @@ impl Hooks for Mod {
         let _ = r.register_setting(reset);
     }
 
+    /// The mod's own items: the cat backpack.
+    fn items(&self, _cx: &RegistrationContext, event: &mut mod_api::ItemsEvent<'_>) {
+        event.items.push(catpack::item());
+    }
+
     /// The chat box lists, colours and completes the mod's commands.
     fn register_client_commands(
         &self,
