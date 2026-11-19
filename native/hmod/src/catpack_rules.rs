@@ -6,8 +6,9 @@
 //! `cat`; `catpack_cat`: the variant). Nothing of it is kept anywhere else, so the bag can be
 //! dropped, put in a chest or lost with its cat, as a bundle with its items.
 //!
-//! - **In**: use a bag in the hand on your own tamed cat. A bag that holds a cat, someone else's
-//!   cat and an untamed one are refused with a line over the hotbar.
+//! - **In**: use a bag in the hand on your own tamed cat, or, wearing the bag, sneak and use the
+//!   cat. A bag that holds a cat, someone else's cat and an untamed one are refused with a line
+//!   over the hotbar.
 //! - **Out**: sneak and use the bag on the top of a block with two clear blocks above it.
 //! - **Growing**: a kitten in a bag in a player's inventory grows as it would outside (not one
 //!   whose age is locked); grown, the bag shows a grown cat.
@@ -21,8 +22,8 @@
 //! merges its data, and a mob's UUID can't be merged; everything else (name, owner, variant,
 //! collar, age, health) is the cat's own.
 //!
-//! Not here yet: a bag worn on the back taking a cat in, a storage window, other players seeing
-//! the cat, growing in chests and as a dropped item.
+//! Not here yet: a slot of its own for the bag, a storage window, growing in chests and as a
+//! dropped item.
 
 use mod_api::{
     Compound, EntityInteractEvent, HostSide, InteractionResult, ItemStack, LivingRef, PlayerRef,
@@ -74,17 +75,53 @@ fn say(host: &mut dyn ServerHost, player: mod_api::PlayerRef, line: &str) {
     let _ = player.action_bar(host, Text::literal(line));
 }
 
-/// A player uses what they hold on an entity: a bag on a cat takes it in.
+/// Where a bag that takes a cat in is: in the hand that clicked, or worn.
+#[derive(Clone, Copy)]
+enum Place {
+    Hand(mod_api::Hand),
+    Worn,
+}
+
+fn put(host: &mut dyn ServerHost, player: PlayerRef, place: Place, stack: ItemStack) -> bool {
+    let living = LivingRef::new(player.entity());
+    match place {
+        Place::Hand(hand) => matches!(living.set_hand_item(host, hand, Some(stack)), Ok(true)),
+        Place::Worn => matches!(living.set_equipment(host, mod_api::EquipmentSlot::Chest, Some(stack)), Ok(true)),
+    }
+}
+
+/// A player uses what they hold on an entity: a bag on a cat takes it in. So does a worn bag,
+/// when its wearer sneaks and uses a cat with a hand that holds no bag.
 pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> Option<InteractionResult> {
-    let stack = event.stack?;
-    let held = bag(stack)?;
     if event.kind != "minecraft:cat" {
         return None;
     }
-    // The client only says the click is taken, so it doesn't also sit the cat down.
-    let HostSide::Server(host) = host else { return Some(InteractionResult::Success) };
+    let in_hand = event.stack.filter(|s| bag(s).is_some());
+    let host = match host {
+        HostSide::Server(host) => host,
+        // The client only says the click is taken, so it doesn't also sit the cat down.
+        HostSide::Client(host) => {
+            let worn = host.local_player().is_some_and(|player| {
+                let entity = player.entity();
+                entity.is_shift_key_down(host) == Some(true)
+                    && LivingRef::new(entity).equipment(host, mod_api::EquipmentSlot::Chest).is_some_and(|s| bag(&s).is_some())
+            });
+            return (in_hand.is_some() || worn).then_some(InteractionResult::Success);
+        }
+    };
     let player = host.players().acting_player()?;
-    let Bag::Empty(mut custom) = held else {
+    let (place, stack) = match in_hand {
+        Some(stack) => (Place::Hand(event.hand), stack.clone()),
+        None => {
+            if player.entity().is_shift_key_down(host) != Some(true) {
+                return None;
+            }
+            let worn = LivingRef::new(player.entity()).equipment(host, mod_api::EquipmentSlot::Chest)?;
+            bag(&worn)?;
+            (Place::Worn, worn)
+        }
+    };
+    let Some(Bag::Empty(mut custom)) = bag(&stack) else {
         say(host, player, "The backpack already holds a cat");
         return Some(InteractionResult::Fail);
     };
@@ -103,18 +140,17 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
     custom.insert("catpack".into(), Tag::String(kind.into()));
     custom.insert("catpack_cat".into(), Tag::String(variant.into()));
     custom.insert("catpack_data".into(), Tag::Compound(data));
-    let Some(full) = rewritten(stack, custom, &format!("spider_man:catpack_{kind}_{variant}")) else {
+    let Some(full) = rewritten(&stack, custom, &format!("spider_man:catpack_{kind}_{variant}")) else {
         return Some(InteractionResult::Fail);
     };
     // The bag first, the cat after: a failure leaves the cat in the world.
-    let hand = event.hand;
-    if !matches!(LivingRef::new(player.entity()).set_hand_item(host, hand, Some(full)), Ok(true)) {
+    if !put(host, player, place, full) {
         say(host, player, "The cat can't be carried right now");
         return Some(InteractionResult::Fail);
     }
     if !cat.discard(host) {
         // The cat stays, so the bag goes back to what it was.
-        let _ = LivingRef::new(player.entity()).set_hand_item(host, hand, Some(stack.clone()));
+        put(host, player, place, stack);
         return Some(InteractionResult::Fail);
     }
     Some(InteractionResult::SuccessServer)

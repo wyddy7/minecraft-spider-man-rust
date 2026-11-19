@@ -8,7 +8,7 @@
 //!
 //! Worn as an item: any item in the chest slot whose `custom_data` has `catpack` (`kitten` or
 //! `cat`) and, optionally, `catpack_cat` (a variant). `/catpack give` gives the two test bags.
-//! Only the local player's bag is seen for now (other players' equipment isn't read yet).
+//! Every player's bag is seen: a worn stack is sent to all who see its wearer.
 //! `/catpack` alone forces the bag onto every player in view, for looking at it.
 //!
 //! While `SPIDEY_CATPACK_TUNE` names a file, the pose is read from it twice a second
@@ -76,8 +76,11 @@ struct Worn {
 /// `/catpack` alone: this bag on every player in view.
 static FORCED: AtomicBool = AtomicBool::new(false);
 static FORCED_WORN: Mutex<Option<Worn>> = Mutex::new(None);
-/// The local player's entity id and the bag in their chest slot, as of the last client tick.
-static LOCAL: Mutex<Option<(u32, Worn)>> = Mutex::new(None);
+/// Each drawn player's entity id and the bag in their chest slot, as of the last client tick: a
+/// worn stack is sent to everyone who sees its wearer, so other players' bags show too.
+static WORN: Mutex<Vec<(u32, Worn)>> = Mutex::new(Vec::new());
+/// The players whose bag was asked for since the last client tick.
+static SEEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// The two cats and the bag as built once at client start; posed again each frame.
 static KITTEN: Mutex<Option<ModelPart>> = Mutex::new(None);
 static CAT: Mutex<Option<ModelPart>> = Mutex::new(None);
@@ -90,9 +93,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The test bags `/catpack give` hands out: black bundles worn in the chest slot, drawn as the bag
 /// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown cat, empty.
 pub const GIVE: [&str; 3] = [
-    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"#,
-    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"#,
-    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"empty"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"#,
+    r##"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"##,
+    r##"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"##,
+    r##"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"empty"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"##,
 ];
 
 /// What `/catpack …` asks for.
@@ -250,16 +253,28 @@ fn kitten(head: ModelPart) -> ModelPart {
 
 /// Each client tick: which bag the local player wears, read from their chest slot.
 pub fn tick(host: &dyn mod_api::ClientHost) {
-    let worn = host.local_player().and_then(|player| {
-        let living = mod_api::LivingRef::new(player.entity());
-        let stack = living.equipment(host, mod_api::EquipmentSlot::Chest)?;
-        Some((player.entity().id(), worn_by(&stack)?))
-    });
-    *lock(&LOCAL) = worn;
-    *lock(&VELOCITY) = host.local_player().and_then(|player| {
-        let v = player.entity().velocity(host)?;
-        Some((player.entity().id(), v.map(|c| c as f32)))
-    });
+    // The players drawn since the last tick, and this window's own.
+    let mut ids = std::mem::take(&mut *lock(&SEEN));
+    if let Some(player) = host.local_player() {
+        let id = player.entity().id();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let mut worn = Vec::new();
+    let mut velocity = Vec::new();
+    for id in ids {
+        let Some(entity) = host.entity(id) else { continue };
+        if let Some(v) = entity.velocity(host) {
+            velocity.push((id, v.map(|c| c as f32)));
+        }
+        let living = mod_api::LivingRef::new(entity);
+        if let Some(bag) = living.equipment(host, mod_api::EquipmentSlot::Chest).and_then(|stack| worn_by(&stack)) {
+            worn.push((id, bag));
+        }
+    }
+    *lock(&WORN) = worn;
+    *lock(&VELOCITY) = velocity;
 }
 
 /// The bag a stack is, by its `custom_data`: `catpack` names the kind, `catpack_cat` the variant.
@@ -513,9 +528,9 @@ struct Frame {
 }
 
 static MOTION: Mutex<Vec<Motion>> = Mutex::new(Vec::new());
-/// The local player's entity id and velocity (blocks a tick), as of the last client tick: what
+/// Each drawn player's entity id and velocity (blocks a tick), as of the last client tick: what
 /// the render state doesn't carry.
-static VELOCITY: Mutex<Option<(u32, [f32; 3])>> = Mutex::new(None);
+static VELOCITY: Mutex<Vec<(u32, [f32; 3])>> = Mutex::new(Vec::new());
 
 /// A number from 0 to 1 that stays the same for `entity` through one `slot` of time.
 fn chance(entity: u32, slot: i32, salt: u32) -> f32 {
@@ -584,7 +599,7 @@ fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
     let turn = if dt > 0.0 { (turn / dt).clamp(-30.0, 30.0) } else { 0.0 };
     m.body_rot = body_rot;
     let (walk, stride) = living.map_or((0.0, 0.0), |l| (l.walk_animation_speed.clamp(0.0, 1.5), l.walk_animation_pos));
-    let velocity = lock(&VELOCITY).filter(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| v);
+    let velocity = lock(&VELOCITY).iter().find(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| *v);
     let rise = velocity[1].clamp(-1.5, 1.0);
     let speed = velocity[0].hypot(velocity[2]).min(2.0);
     let rush = ((speed - 0.35) / 0.6).clamp(0.0, 1.0);
@@ -724,7 +739,12 @@ fn shown(entity: u32) -> Option<Worn> {
     if FORCED.load(Ordering::Relaxed) {
         return Some(lock(&FORCED_WORN).clone().unwrap_or(Worn { kind: Kind::Kitten, variant: "red".into() }));
     }
-    lock(&LOCAL).as_ref().filter(|(id, _)| *id == entity).map(|(_, w)| w.clone())
+    let mut seen = lock(&SEEN);
+    if seen.len() < 256 && !seen.contains(&entity) {
+        seen.push(entity);
+    }
+    drop(seen);
+    lock(&WORN).iter().find(|(id, _)| *id == entity).map(|(_, w)| w.clone())
 }
 
 struct Layer;
