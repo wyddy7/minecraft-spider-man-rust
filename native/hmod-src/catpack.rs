@@ -39,6 +39,8 @@ pub const VARIANTS: [&str; 11] = [
 pub enum Kind {
     Kitten,
     Cat,
+    /// A bag with no cat in it: worn shut.
+    Empty,
 }
 
 impl Kind {
@@ -46,19 +48,20 @@ impl Kind {
         match s {
             "kitten" => Some(Self::Kitten),
             "cat" => Some(Self::Cat),
+            "empty" => Some(Self::Empty),
             _ => None,
         }
     }
     fn texture(self, variant: &str) -> String {
         match self {
             Self::Kitten => format!("entity/cat/cat_{variant}_baby"),
-            Self::Cat => format!("entity/cat/cat_{variant}"),
+            Self::Cat | Self::Empty => format!("entity/cat/cat_{variant}"),
         }
     }
     fn model(self) -> &'static Mutex<Option<ModelPart>> {
         match self {
             Self::Kitten => &KITTEN,
-            Self::Cat => &CAT,
+            Self::Cat | Self::Empty => &CAT,
         }
     }
 }
@@ -89,7 +92,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub const GIVE: [&str; 3] = [
     r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"#,
     r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"#,
-    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"#,
+    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"empty"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"#,
 ];
 
 /// What `/catpack …` asks for.
@@ -391,7 +394,7 @@ impl Tune {
     fn of(kind: Kind) -> Self {
         Self(match kind {
             Kind::Kitten => KITTEN_POSE,
-            Kind::Cat => CAT_POSE,
+            Kind::Cat | Kind::Empty => CAT_POSE,
         })
     }
 
@@ -743,6 +746,7 @@ impl EntityRenderLayer for Layer {
         apply(draw, &body.pose);
         // The tuning file's `hide` holds the cat that far ducked, for looking at it.
         let frame = match tune.get("hide")[0] {
+            _ if worn.kind == Kind::Empty => Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() },
             h if h >= 0.0 => Frame { duck: h, paws: [h; 2], shut: ((h - 0.5) / 0.5).clamp(0.0, 1.0), hidden: h > 0.98, ..Frame::default() },
             _ => motion(entity, &tune),
         };

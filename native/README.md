@@ -30,6 +30,7 @@ around them.
 | cancellable HEAD | `horizon_client_render::camera::view_matrix` | the wall camera's turn of the whole view, for the frame's own yaw and pitch (world, culling, sky, reflections) |
 | HEAD | `game::native_hooks::base::Game::native_camera_shake` | the rumble, scaled by Distortion Effects |
 | mod API | `register`, `register_client_commands`, `command`, `setting_changed` | R and Z in Controls, `/swingmode` (own world only), the web delay on the mod's page |
+| mod API | `entity_interact`, `use_item_on_block`, `level_tick_post`, `register_entity_layers` | the cat backpack: a bag used on your own tamed cat takes it in; sneak-use on a block lets it out; a kitten in a carried bag grows; the bag and its cat are drawn on the back |
 
 The mod acts only in your own world (single player, or a LAN world you host): Horizon's own server thread is
 running and the game is connected to it. Numbers from the mod that are not finite are dropped, ray offsets are

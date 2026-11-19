@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use mod_api::{ClientHost, Flow, Hooks, KeyRegistration, Registrar, RegistrationContext, SettingSpec};
 
 pub mod catpack;
+pub mod catpack_rules;
 
 /// The mod's keys: id, the label Controls shows, the default key.
 pub const KEYS: [(&str, &str, &str); 2] = [
@@ -136,6 +137,22 @@ impl Hooks for Mod {
 
     /// A landing on the own world's server while the owner's web holds (`fall_gate`): no fall
     /// damage, as under Slow Falling, so a web shot after a long drop lands softly.
+    fn entity_interact(&self, host: mod_api::HostSide, event: &mut mod_api::EntityInteractEvent<'_>) -> Option<mod_api::InteractionResult> {
+        catpack_rules::entity_interact(host, event)
+    }
+
+    fn use_item_on_block(&self, host: mod_api::HostSide, event: &mut mod_api::UseItemOnBlockEvent<'_>) -> Flow {
+        if let Some(result) = catpack_rules::use_item_on_block(host, event) {
+            *event.cancellation_result = result;
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
+    fn level_tick_post(&self, host: mod_api::HostSide, event: &mut mod_api::LevelTickPostEvent) {
+        catpack_rules::level_tick(host, event);
+    }
+
     fn living_fall(&self, _cx: &dyn mod_api::LoopContext, event: &mut mod_api::LivingFallEvent<'_>) -> Flow {
         if fall_gate::forget(event.entity) {
             event.distance = 0.0;

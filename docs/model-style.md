@@ -49,7 +49,9 @@ what we learned checking them in the game.
   trunk's top, so nothing floats. It moves on damped springs stepped in game ticks (`motion` in
   `catpack.rs`): it looks around, breathes and kneads at rest; its head lags behind the carrier's turns, bobs
   with their steps and jumps; when the carrier is hurt it starts, dives, the lid slams with a bounce, then it
-  looks out from under the lifted lid and pops back out, head first, one paw after the other. **Not settled:** the whole-cat scale. In development the grown cat is drawn at 0.6 and the kitten
+  looks out from under the lifted lid and pops back out, head first, one paw after the other. The item is the same
+  bag in 3D (`native/tools/catpack_item_models.py` writes the item models from the same boxes), empty with
+  its lid shut or with its cat. The rules (a cat goes in, grows, comes out) are `catpack_rules.rs`. **Not settled:** the whole-cat scale. In development the grown cat is drawn at 0.6 and the kitten
   at 0.5, the sizes the overlay gave; that breaks pixel size against the player (the cat's pixels are smaller
   than the player's and the bag's). At 1 the game's head (5 wide) is well over half the player's head.
 - **Layers vanish in the mod's own poses.** While the mod poses the player (swing, wall run, flips) it draws
