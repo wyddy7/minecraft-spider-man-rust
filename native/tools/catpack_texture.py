@@ -90,22 +90,26 @@ for i in range(tsx, tsx + 8):
         dot(i, tsy + 1, STITCH if i % 2 == 0 else BAG[1])
 # The top section's back, 6×3×1: lining towards the cat.
 box(26, 0, 6, 3, 1, BAG, inside=("south",))
-# Its lip, 6×1×1: the red zip along the top.
-box(26, 4, 6, 1, 1, RIM, inside=("north",))
-for i in range(27, 27 + 6):
-    dot(i, 4, TRIM[0])
-# The flap, 6×2×1, unzipped and folded forward: what shows is its lining (south), edged by the
-# red zip; its canvas side (north) lies towards the trunk.
-_, _, fx, fy = box(26, 6, 6, 2, 1, BAG, inside=("south",))
-for i in range(fx, fx + 6):
-    dot(i, fy + 1, TRIM[0])
+# Its front wall, 6×3×1: lining towards the cat, the red zip along the top outside.
+_, _, lx, ly = box(26, 4, 6, 3, 1, BAG, inside=("north",))
+for i in range(lx, lx + 6):
+    dot(i, ly, TRIM[0])
+# The lid, 6×4×1, hinged on the front wall. Its north face is the outside (seen from above when
+# the bag is shut), its south face the lining, edged by the red zip (seen when it hangs open).
+lnx, lny, lsx, lsy = box(26, 8, 6, 4, 1, BAG, inside=("south",))
+face(lnx, lny, 6, 4, BAG, 3)
+for i in range(lsx, lsx + 6):
+    dot(i, lsy + 3, TRIM[0])
+for j in range(lsy, lsy + 4):
+    dot(lsx, j, TRIM[0])
+    dot(lsx + 5, j, TRIM[0])
 # A cheek of the top section, 1×3×4: canvas outside (its west face; the other is mirrored),
 # lining inside, the zip along its top.
 _, cy, _, _ = box(40, 0, 1, 3, 4, BAG, inside=("east",))
 for i in range(40, 44):
     dot(i, cy, TRIM[0])
 # The front pocket, 6×5×2: a zip line under its top with a red pull, cord across the front.
-_, _, qx, qy = box(26, 9, 6, 5, 2, RIM)
+_, _, qx, qy = box(0, 13, 6, 5, 2, RIM)
 for i in range(qx, qx + 6):
     dot(i, qy + 1, BAG[0])
 dot(qx + 4, qy + 1, TRIM[1])

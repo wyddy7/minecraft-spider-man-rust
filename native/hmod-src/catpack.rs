@@ -266,8 +266,8 @@ fn worn_by(stack: &mod_api::ItemStack) -> Option<Worn> {
     Some(Worn { kind, variant })
 }
 
-/// Where the flap hinges: the lip's top outer edge.
-const FLAP_HINGE: [f32; 3] = [0.0, 3.0, 7.0];
+/// Where the lid hinges: the top section's front wall, its top outer edge.
+const LID_HINGE: [f32; 3] = [0.0, 1.0, 7.0];
 
 /// The bag in the body's frame, in whole texels (the style's rule: one texture pixel is one model
 /// pixel): +y down from the shoulders, the back towards +z (the body is 8 wide, 12 tall, 4 deep
@@ -275,9 +275,10 @@ const FLAP_HINGE: [f32; 3] = [0.0, 3.0, 7.0];
 /// of it: narrower at the top than at the foot, deeper than the body.
 ///
 /// - the trunk, as wide as the back, from the chest down to the hips;
-/// - on it a narrower top section, unzipped: a back, two cheeks and a low lip in front, with a
-///   well between them where the cat sits on the trunk's top; a grab handle above the back;
-/// - the flap, folded forward from the lip and hanging out at an angle, lining up;
+/// - on it a narrower top section, unzipped: a back, two cheeks and a front wall, with a well
+///   between them where the cat sits on the trunk's top; a grab handle above the back;
+/// - the lid, hinged on the front wall: open, it hangs out in front, lining up; shut, it lies
+///   over the well;
 /// - a big pocket low on the front and a mesh pocket low on each side.
 ///
 /// The straps are thin planes, as vanilla draws flat parts. UV places match
@@ -292,11 +293,11 @@ fn bag() -> ModelPart {
         .tex_offs(26, 0)
         .add_box([-3.0, 1.0, 2.0], [6.0, 3.0, 1.0])
         .tex_offs(26, 4)
-        .add_box([-3.0, 3.0, 6.0], [6.0, 1.0, 1.0])
+        .add_box([-3.0, 1.0, 6.0], [6.0, 3.0, 1.0])
         .tex_offs(40, 0)
         .add_box([-3.0, 1.0, 3.0], [1.0, 3.0, 4.0])
         .add_box_mirrored([2.0, 1.0, 3.0], [1.0, 3.0, 4.0], true)
-        .tex_offs(26, 9)
+        .tex_offs(0, 13)
         .add_box([-3.0, 7.0, 7.0], [6.0, 5.0, 2.0])
         .tex_offs(50, 0)
         .add_box([-5.0, 7.0, 3.0], [1.0, 4.0, 3.0])
@@ -304,8 +305,8 @@ fn bag() -> ModelPart {
         .tex_offs(58, 0)
         .add_box([-1.0, 0.0, 2.0], [2.0, 1.0, 1.0]);
     mesh.add_or_replace_child(root, "shell", shell, PartPose::ZERO);
-    let hinge = PartPose::offset(FLAP_HINGE[0], FLAP_HINGE[1], FLAP_HINGE[2]);
-    mesh.add_or_replace_child(root, "flap", one(26, 6, [-3.0, 0.0, 0.0], [6.0, 2.0, 1.0]), hinge);
+    let hinge = PartPose::offset(LID_HINGE[0], LID_HINGE[1], LID_HINGE[2]);
+    mesh.add_or_replace_child(root, "lid", one(26, 8, [-3.0, 0.0, -1.0], [6.0, 4.0, 1.0]), hinge);
     mesh.add_or_replace_child(root, "strap_top_r", one(32, 24, [-3.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
     mesh.add_or_replace_child(root, "strap_top_l", one(32, 24, [2.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
     mesh.add_or_replace_child(root, "strap_front_r", one(48, 24, [-3.0, 0.0, -2.75], [1.0, 7.0, 0.5]), PartPose::ZERO);
@@ -316,7 +317,7 @@ fn bag() -> ModelPart {
 /// What a pose is made of: `key = a b c` lines of the tuning file replace the shown cat's numbers.
 /// Places are in the bag's frame (texels, +y down, +z away from the player's back), turns in
 /// degrees (the cat's parts turn in the cat's own frame, which looks along -z).
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     // The cat's size against the game's own model of it.
     "scale",
     // How far the flap hangs out from the front wall.
@@ -336,33 +337,37 @@ const KEYS: [&str; 12] = [
     "idle",
     // The grown cat's paws: 0 flat (2×3×1), 1 the game's thickness (2×3×2), 2 thin (1×3×1).
     "paw",
+    // For looking at the hiding: 0 to 1 holds the cat that far ducked; below 0, the game decides.
+    "hide",
 ];
 
-/// The grown cat's pose, in `KEYS`' order: sitting on the trunk's top in the well, its head and
-/// neck over the lip, looking up and aside past the player's shoulder, both paws on the flap,
-/// one a little further out (as the game's lying cat holds them).
+/// The grown cat's pose, in `KEYS`' order: sitting on the trunk's top in the well, by its front
+/// wall, its head and neck over it, looking up and aside past the player's shoulder, both paws
+/// over the wall onto the open lid, one a little further out (as the game's lying cat holds
+/// them).
 const CAT_POSE: [[f32; 3]; KEYS.len()] = [
     [0.6, 0.0, 0.0],
     [35.0, 0.0, 0.0],
-    [0.0, 4.0, 4.6],
+    [0.0, 4.0, 5.0],
     [6.0, 0.0, 0.0],
-    [0.0, 0.0, 5.3],
+    [0.0, -0.5, 5.8],
     [-12.0, -30.0, 6.0],
-    [-0.8, 2.3, 5.7],
+    [-0.8, 0.5, 6.3],
     [-62.0, 0.0, 0.0],
-    [0.8, 2.2, 5.6],
+    [0.8, 0.4, 6.2],
     [-56.0, 0.0, 0.0],
     [4.0, 0.08, 0.0],
     [0.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
 ];
 
-/// The kitten's pose: the same seat, only its head over the lip.
+/// The kitten's pose: the same seat, only its head over the wall.
 const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [0.5, 0.0, 0.0],
     [35.0, 0.0, 0.0],
-    [0.0, 4.0, 4.7],
+    [0.0, 3.0, 5.0],
     [6.0, 0.0, 0.0],
-    [0.0, 1.3, 5.3],
+    [0.0, 0.2, 5.7],
     [-12.0, -30.0, 6.0],
     [0.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
@@ -370,6 +375,7 @@ const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [0.0, 0.0, 0.0],
     [4.0, 0.08, 0.0],
     [0.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
 ];
 
 #[derive(Clone)]
@@ -419,15 +425,55 @@ fn rad(deg: [f32; 3]) -> [f32; 3] {
     deg.map(f32::to_radians)
 }
 
-/// Folds the flap out from the front wall by the pose's angle.
-fn pose_bag(bag: &mut ModelPart, t: &Tune) {
-    if let Some(flap) = bag.get_child_mut("flap") {
-        flap.x_rot = t.get("open")[0].to_radians();
+/// Sets the lid: hanging out in front by the pose's angle, or, as `hide` goes to 1, swung back
+/// to lie over the well.
+fn pose_bag(bag: &mut ModelPart, t: &Tune, hide: f32) {
+    if let Some(lid) = bag.get_child_mut("lid") {
+        let open = t.get("open")[0];
+        // The lid waits for the cat to duck, then swings shut.
+        let shut = ((hide - 0.5) / 0.5).clamp(0.0, 1.0);
+        lid.x_rot = (open + (-90.0 - open) * shut).to_radians();
     }
 }
 
-/// Poses the cat for this frame; `age` in ticks drives the head's idle sway.
-fn pose(cat: &mut ModelPart, t: &Tune, age: f32) {
+/// How deep the cat ducks into the well when it hides, in the bag's texels.
+const DUCK: f32 = 3.4;
+/// How far it draws back from the front wall as it ducks.
+const DRAW_BACK: f32 = 1.5;
+/// How long the cat stays hidden after its carrier is hurt, and how long it takes to duck and
+/// to come back out, in seconds.
+const HIDE_FOR: f32 = 4.0;
+const DUCK_IN: f32 = 0.35;
+const COME_OUT: f32 = 0.6;
+
+/// Each carrier's hiding: how far the cat has ducked (0 out, 1 hidden with the lid shut), when
+/// that was last moved on, and until when it stays hidden.
+static HIDING: Mutex<Vec<(u32, f32, Instant, Instant)>> = Mutex::new(Vec::new());
+
+/// How far `entity`'s cat has ducked this frame; `hurt` sends it into the bag for `HIDE_FOR`.
+fn hiding(entity: u32, hurt: bool) -> f32 {
+    let now = Instant::now();
+    let mut all = lock(&HIDING);
+    // Carriers not drawn for a while are forgotten.
+    all.retain(|(_, _, at, _)| now.duration_since(*at).as_secs_f32() < 30.0);
+    let i = all.iter().position(|(id, ..)| *id == entity).unwrap_or_else(|| {
+        all.push((entity, 0.0, now, now));
+        all.len() - 1
+    });
+    let (_, amount, at, until) = &mut all[i];
+    if hurt {
+        *until = now + std::time::Duration::from_secs_f32(HIDE_FOR);
+    }
+    let dt = now.duration_since(*at).as_secs_f32().min(0.25);
+    *at = now;
+    *amount = if now < *until { (*amount + dt / DUCK_IN).min(1.0) } else { (*amount - dt / COME_OUT).max(0.0) };
+    *amount
+}
+
+/// Poses the cat for this frame; `age` in ticks drives the head's idle sway, `hide` (0 to 1)
+/// ducks it into the well, out of sight once the lid is shut.
+fn pose(cat: &mut ModelPart, t: &Tune, age: f32, hide: f32) {
+    cat.visible = hide < 0.98;
     // The cat is turned half round about y: a place (x, y, z) of the bag is (-x, y, -z) of the cat.
     // Places are the bag's texels whatever the cat's size.
     let scale = t.get("scale")[0].max(0.1);
@@ -436,7 +482,9 @@ fn pose(cat: &mut ModelPart, t: &Tune, age: f32) {
     cat.z_scale = scale;
     let place = |part: &mut ModelPart, key: &str| {
         let [x, y, z] = t.get(key);
-        part.set_pos(-x / scale, y / scale, -z / scale);
+        // Ducking, it also draws back from the front wall, so nothing of it shows through.
+        let duck = (hide / 0.6).min(1.0);
+        part.set_pos(-x / scale, (y + DUCK * duck) / scale, -(z - DRAW_BACK * duck) / scale);
     };
     if let Some(body) = cat.get_child_mut("body") {
         place(body, "body_at");
@@ -510,12 +558,17 @@ impl EntityRenderLayer for Layer {
         draw.scale([1.0, -1.0, -1.0]);
         draw.translate([0.0, -1.501, 0.0]);
         apply(draw, &body.pose);
+        let hurt = entity.living.as_ref().is_some_and(|l| l.has_red_overlay);
+        let hide = match tune.get("hide")[0] {
+            h if h >= 0.0 => h,
+            _ => hiding(entity.id, hurt),
+        };
         if let Some(bag) = lock(&BAG).as_mut() {
-            pose_bag(bag, &tune);
+            pose_bag(bag, &tune, hide);
             draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
         }
         if let Some(cat) = lock(worn.kind.model()).as_mut() {
-            pose(cat, &tune, entity.age);
+            pose(cat, &tune, entity.age, hide);
             draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
         }
         draw.pop();
