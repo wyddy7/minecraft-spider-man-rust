@@ -1,7 +1,10 @@
-//! The cat backpack, prototype: a backpack on the player's back with a cat peeking out of it.
-//! Drawn by an entity layer on both player models through the mod API (no mixins): the bag is the
-//! mod's own model and texture, the cat is the game's own model (`minecraft:cat_baby#main` for a
-//! kitten, `minecraft:cat#main` for a grown cat) with a vanilla cat texture, posed here in code.
+//! The cat backpack: a backpack on the player's back, its front half leaning open, with a small cat
+//! sitting in it, head and crossed paws over the rim, looking away from the player's back.
+//! Drawn by an entity layer on both player models through the mod API (no mixins). The bag is the
+//! mod's own model and texture. The cat, grown or a kitten, is the mod's own small model laid out
+//! on the game's texture of it (`entity/cat/cat_<variant>`, 64×32, or `…_baby`, 32×32): the
+//! game's own head, a short body and two-part front legs cut from the same places of that
+//! texture, so every cat variant fits without a texture of ours.
 //!
 //! Worn as an item: any item in the chest slot whose `custom_data` has `catpack` (`kitten` or
 //! `cat`) and, optionally, `catpack_cat` (a variant). `/catpack give` gives the two test bags.
@@ -9,22 +12,29 @@
 //! `/catpack` alone forces the bag onto every player in view, for looking at it.
 //!
 //! While `SPIDEY_CATPACK_TUNE` names a file, the pose is read from it twice a second
-//! (`key = numbers`, see `Tune::read`), so it can be tuned in a running game without a rebuild.
+//! (`key = numbers`, see `Tune`), so it can be tuned in a running game without a rebuild.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use mod_api::{
-    BlockEntityDrawContext, CubeListBuilder, EntityRenderLayer, EntityRenderState, HumanoidPart,
-    LayerDefinition, LayerTarget, MeshDefinition, ModelPart, PartPose, PlayerModel, PosedParts,
+    BlockEntityDrawContext, CubeListBuilder, EntityRenderLayer, EntityRenderState,
+    HumanoidPart, LayerDefinition, LayerTarget, MeshDefinition, ModelPart, ModelPolygon, PartPose,
+    PlayerModel, PosedParts,
 };
 
 /// The bag's texture: `assets/spider_man/textures/entity/catpack.png` (made by
 /// `native/tools/catpack_texture.py`).
 const BAG_SPRITE: &str = "spider_man:entity/catpack";
 
-/// A kitten or a grown cat: the game's model of it and what that model's numbers are.
+/// The cat variants: the texture `entity/cat/cat_<name>`.
+pub const VARIANTS: [&str; 11] = [
+    "tabby", "black", "red", "siamese", "british_shorthair", "calico", "persian", "ragdoll",
+    "white", "jellie", "all_black",
+];
+
+/// A kitten or a grown cat.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Kitten,
@@ -39,46 +49,19 @@ impl Kind {
             _ => None,
         }
     }
-    fn layer(self) -> &'static str {
-        match self {
-            Self::Kitten => "minecraft:cat_baby#main",
-            Self::Cat => "minecraft:cat#main",
-        }
-    }
     fn texture(self, variant: &str) -> String {
         match self {
             Self::Kitten => format!("entity/cat/cat_{variant}_baby"),
             Self::Cat => format!("entity/cat/cat_{variant}"),
         }
     }
-    /// The scale the game's own layer gives the whole model (the grown cat is drawn at 0.8).
-    fn base_scale(self) -> f32 {
+    fn model(self) -> &'static Mutex<Option<ModelPart>> {
         match self {
-            Self::Kitten => 1.0,
-            Self::Cat => 0.8,
-        }
-    }
-    /// The head's centre in the model's own frame, in texels.
-    fn head_centre(self) -> [f32; 3] {
-        match self {
-            Self::Kitten => [0.0, 18.5, -4.5],
-            Self::Cat => [0.0, 14.5, -10.0],
-        }
-    }
-    /// How long a front leg is, in texels.
-    fn leg_length(self) -> f32 {
-        match self {
-            Self::Kitten => 2.0,
-            Self::Cat => 10.0,
+            Self::Kitten => &KITTEN,
+            Self::Cat => &CAT,
         }
     }
 }
-
-/// The cat variants: the texture `entity/cat/cat_<name>` (`_baby` for a kitten).
-pub const VARIANTS: [&str; 11] = [
-    "tabby", "black", "red", "siamese", "british_shorthair", "calico", "persian", "ragdoll",
-    "white", "jellie", "all_black",
-];
 
 /// What a bag on a back shows.
 #[derive(Clone, PartialEq, Debug)]
@@ -92,10 +75,10 @@ static FORCED: AtomicBool = AtomicBool::new(false);
 static FORCED_WORN: Mutex<Option<Worn>> = Mutex::new(None);
 /// The local player's entity id and the bag in their chest slot, as of the last client tick.
 static LOCAL: Mutex<Option<(u32, Worn)>> = Mutex::new(None);
-/// The two models as baked once at client start; posed again each frame.
+/// The two cats and the bag as built once at client start; posed again each frame.
 static KITTEN: Mutex<Option<ModelPart>> = Mutex::new(None);
 static CAT: Mutex<Option<ModelPart>> = Mutex::new(None);
-static BAG: OnceLock<ModelPart> = OnceLock::new();
+static BAG: Mutex<Option<ModelPart>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -137,30 +120,127 @@ pub fn command(args: &str) -> Command {
     Command::Say(format!("/catpack [kitten|cat [variant]] | give. Cats: {}", VARIANTS.join(", ")))
 }
 
-/// Bakes both cats (the game's layers) and the bag (ours). Called once at client start.
+/// Builds both cats (each one's head is the game's own, from `minecraft:cat#main` and
+/// `minecraft:cat_baby#main`) and the bag. Called once at client start.
 pub fn bake(host: &dyn mod_api::ClientHost) {
-    *lock(&KITTEN) = host.bake_layer(Kind::Kitten.layer());
-    *lock(&CAT) = host.bake_layer(Kind::Cat.layer()).map(|mut cat| {
-        for name in ["right_front_leg", "left_front_leg"] {
-            if let Some(leg) = cat.get_child_mut(name) {
-                *leg = paw();
-            }
-        }
-        cat
-    });
-    let _ = BAG.set(bag());
+    let head = |layer: &str| host.bake_layer(layer).and_then(|cat| cat.get_child("head").cloned());
+    *lock(&CAT) = head("minecraft:cat#main").map(cat);
+    *lock(&KITTEN) = head("minecraft:cat_baby#main").map(kitten);
+    *lock(&BAG) = Some(bag());
 }
 
-/// A paw folded over the bag's rim: a 1×3×1 box on the cat texture's front leg, at the rows that
-/// end in the light paw, so every cat's texture lies on it pixel for pixel. The game's leg (2×10)
-/// is twice as thick and three times as long as a paw resting on a rim reads.
-fn paw() -> ModelPart {
+/// One box's faces, baked on a `texture` of that many texels at the box-UV place (`u`, `v`).
+fn cat_box(texture: [u32; 2], u: i32, v: i32, origin: [f32; 3], size: [f32; 3]) -> Vec<ModelPolygon> {
     let mut mesh = MeshDefinition::new();
     let root = mesh.root();
-    let cubes = CubeListBuilder::create().tex_offs(40, 8).add_box([-0.5, 0.0, -0.5], [1.0, 3.0, 1.0]);
-    mesh.add_or_replace_child(root, "paw", cubes, PartPose::ZERO);
-    let baked = LayerDefinition::create(mesh, 64, 32).bake_root();
-    baked.get_child("paw").cloned().unwrap_or(baked)
+    let cubes = CubeListBuilder::create().tex_offs(u, v).add_box(origin, size);
+    mesh.add_or_replace_child(root, "box", cubes, PartPose::ZERO);
+    let baked = LayerDefinition::create(mesh, texture[0], texture[1]).bake_root();
+    baked.get_child("box").map(|b| b.polygons.clone()).unwrap_or_default()
+}
+
+/// Lays the face of `polygons` looking along `normal` on the texture's rectangle from
+/// (`rect[0]`, `rect[1]`), the face's top left, to (`rect[2]`, `rect[3]`), in texels, turned by
+/// `turns` quarter turns.
+fn lay_face(polygons: &mut [ModelPolygon], normal: [f32; 3], rect: [f32; 4], turns: usize, texture: [u32; 2]) {
+    let [ua, va, ub, vb] = rect;
+    // The corners in the order a baked face holds them: right top, left top, left bottom, right bottom.
+    let uv = [(ub, va), (ua, va), (ua, vb), (ub, vb)];
+    for polygon in polygons.iter_mut().filter(|p| p.normal == normal) {
+        for (k, vertex) in polygon.vertices.iter_mut().enumerate() {
+            let (u, v) = uv[(k + turns) % 4];
+            vertex.u = u / texture[0] as f32;
+            vertex.v = v / texture[1] as f32;
+        }
+    }
+}
+
+/// The game's head with its box's centre moved to the part's origin, so a head is placed by its
+/// middle whatever the model.
+fn centred(mut head: ModelPart, centre: [f32; 3]) -> ModelPart {
+    for polygon in &mut head.polygons {
+        for vertex in &mut polygon.vertices {
+            for (p, c) in vertex.pos.iter_mut().zip(centre) {
+                *p -= c;
+            }
+        }
+    }
+    head.set_initial_pose(PartPose::ZERO);
+    head
+}
+
+/// A cat of these parts, in the game's own model frame (+y down, its front towards -z), every
+/// part posed each frame by `pose`. As everywhere in the game, a leg is one straight box turning
+/// at one pivot (the shoulder, at the part's origin).
+fn assemble(head: ModelPart, body: Vec<ModelPolygon>, legs: Vec<(&str, Vec<ModelPolygon>)>) -> ModelPart {
+    let mut parts = vec![
+        ("body".to_owned(), ModelPart::new(body, Vec::new(), PartPose::ZERO)),
+        ("head".to_owned(), head),
+    ];
+    for (name, leg) in legs {
+        parts.push((name.to_owned(), ModelPart::new(leg, Vec::new(), PartPose::ZERO)));
+    }
+    // Turned half round about y so the cat looks away from the player's back: a point (x, y, z)
+    // of the cat's frame lands at (-x, y, -z) of the bag's.
+    ModelPart::new(Vec::new(), parts, PartPose::rotation(0.0, std::f32::consts::PI, 0.0))
+}
+
+/// The grown cat, on its 64×32 texture.
+///
+/// - `head`: the game's grown cat head (5×4×5 with its nose and ears), as the game bakes it.
+/// - `body`: an upright trunk, 4×5×3, its foot at the part's origin. It lies on the front end
+///   of the texture's body (4×16×6 at 20,0): the chest stripe on its front, the flanks on its
+///   sides, the neck's end on top.
+/// - `arm_r`, `arm_l`: a paw lying on the flap, 2×3×1: the last rows of the game's front leg
+///   (2×10×2 at 40,0), where the light paw is, as wide as the game's and half as thick.
+/// - `thick_*` (2×3×2, the game's thickness) and `thin_*` (1×3×1) are shown instead while the
+///   pose's `paw` is 1 or 2 (a trial: which of the three stays is not settled).
+fn cat(head: ModelPart) -> ModelPart {
+    const T: [u32; 2] = [64, 32];
+    let body = cat_box(T, 23, 3, [-2.0, -5.0, -1.5], [4.0, 5.0, 3.0]);
+    let flat = || {
+        let mut leg = cat_box(T, 41, 8, [-1.0, 0.0, -0.5], [2.0, 3.0, 1.0]);
+        lay_face(&mut leg, [0.0, 1.0, 0.0], [44.0, 0.0, 46.0, 1.0], 0, T);
+        leg
+    };
+    let thick = || {
+        let mut leg = cat_box(T, 40, 7, [-1.0, 0.0, -1.0], [2.0, 3.0, 2.0]);
+        lay_face(&mut leg, [0.0, 1.0, 0.0], [44.0, 0.0, 46.0, 2.0], 0, T);
+        leg
+    };
+    let thin = || {
+        let mut leg = cat_box(T, 41, 8, [-0.5, 0.0, -0.5], [1.0, 3.0, 1.0]);
+        lay_face(&mut leg, [0.0, 1.0, 0.0], [44.0, 0.0, 45.0, 1.0], 0, T);
+        leg
+    };
+    let legs = vec![
+        ("arm_r", flat()),
+        ("arm_l", flat()),
+        ("thick_r", thick()),
+        ("thick_l", thick()),
+        ("thin_r", thin()),
+        ("thin_l", thin()),
+    ];
+    assemble(centred(head, [0.0, 0.0, -0.5]), body, legs)
+}
+
+/// The kitten, on its 32×32 texture.
+///
+/// - `head`: the game's kitten head (5×4×4 with its nose and ears), as the game bakes it.
+/// - `body`: a short upright trunk, 4×4×3. The texture's body lies along the kitten (4×3×7), so
+///   each face is cut from its front end: the belly on the chest, the back on the back, the
+///   flanks turned upright on the sides, the neck's end on top.
+///
+/// No paws: a kitten is too small to reach the lip, only its head shows over it.
+fn kitten(head: ModelPart) -> ModelPart {
+    const T: [u32; 2] = [32, 32];
+    let mut body = cat_box(T, 0, 8, [-2.0, -4.0, -1.5], [4.0, 4.0, 3.0]);
+    lay_face(&mut body, [0.0, 0.0, -1.0], [11.0, 15.0, 15.0, 11.0], 0, T);
+    lay_face(&mut body, [0.0, 0.0, 1.0], [7.0, 15.0, 11.0, 11.0], 0, T);
+    lay_face(&mut body, [-1.0, 0.0, 0.0], [3.0, 15.0, 7.0, 18.0], 1, T);
+    lay_face(&mut body, [1.0, 0.0, 0.0], [11.0, 15.0, 15.0, 18.0], 3, T);
+    lay_face(&mut body, [0.0, -1.0, 0.0], [7.0, 15.0, 11.0, 18.0], 0, T);
+    assemble(centred(head, [0.0, -1.0, -0.9]), body, Vec::new())
 }
 
 /// Each client tick: which bag the local player wears, read from their chest slot.
@@ -186,131 +266,152 @@ fn worn_by(stack: &mod_api::ItemStack) -> Option<Worn> {
     Some(Worn { kind, variant })
 }
 
+/// Where the flap hinges: the lip's top outer edge.
+const FLAP_HINGE: [f32; 3] = [0.0, 3.0, 7.0];
+
 /// The bag in the body's frame, in whole texels (the style's rule: one texture pixel is one model
 /// pixel): +y down from the shoulders, the back towards +z (the body is 8 wide, 12 tall, 4 deep
-/// about its pivot). An open top: the body box ends at the rim's foot, four 1-texel walls make the
-/// rim, and a dark plate is the inside seen from above. The straps are thin planes, as vanilla
-/// draws flat parts. UV places match `native/tools/catpack_texture.py`.
+/// about its pivot). After the bag Miles carries his cat in, laid over the game's own pictures
+/// of it: narrower at the top than at the foot, deeper than the body.
+///
+/// - the trunk, as wide as the back, from the chest down to the hips;
+/// - on it a narrower top section, unzipped: a back, two cheeks and a low lip in front, with a
+///   well between them where the cat sits on the trunk's top; a grab handle above the back;
+/// - the flap, folded forward from the lip and hanging out at an angle, lining up;
+/// - a big pocket low on the front and a mesh pocket low on each side.
+///
+/// The straps are thin planes, as vanilla draws flat parts. UV places match
+/// `native/tools/catpack_texture.py`.
 fn bag() -> ModelPart {
     let mut mesh = MeshDefinition::new();
     let root = mesh.root();
-    let mut add = |name: &str, u: i32, v: i32, origin: [f32; 3], size: [f32; 3]| {
-        let cubes = CubeListBuilder::create().tex_offs(u, v).add_box(origin, size);
-        mesh.add_or_replace_child(root, name, cubes, PartPose::ZERO);
-    };
-    add("body", 0, 0, [-3.5, 3.0, 2.3], [7.0, 7.0, 5.0]);
-    add("inside", 32, 16, [-2.5, 2.9, 3.3], [5.0, 0.0, 3.0]);
-    add("rim_back", 0, 16, [-3.5, 1.0, 2.3], [7.0, 2.0, 1.0]);
-    add("rim_front", 0, 16, [-3.5, 1.0, 6.3], [7.0, 2.0, 1.0]);
-    add("rim_left", 20, 16, [-3.5, 1.0, 3.3], [1.0, 2.0, 3.0]);
-    add("rim_right", 20, 16, [2.5, 1.0, 3.3], [1.0, 2.0, 3.0]);
-    add("pocket", 0, 24, [-2.5, 6.0, 7.3], [5.0, 3.0, 1.0]);
-    add("buckle", 16, 24, [-0.5, 6.0, 8.3], [1.0, 1.0, 0.25]);
-    add("strap_top_r", 32, 24, [-3.0, -0.5, -2.5], [1.0, 0.5, 5.0]);
-    add("strap_top_l", 32, 24, [2.0, -0.5, -2.5], [1.0, 0.5, 5.0]);
-    add("strap_front_r", 48, 24, [-3.0, 0.0, -2.75], [1.0, 7.0, 0.5]);
-    add("strap_front_l", 48, 24, [2.0, 0.0, -2.75], [1.0, 7.0, 0.5]);
+    let one = |u: i32, v: i32, origin: [f32; 3], size: [f32; 3]| CubeListBuilder::create().tex_offs(u, v).add_box(origin, size);
+    let shell = CubeListBuilder::create()
+        .tex_offs(0, 0)
+        .add_box([-4.0, 4.0, 2.0], [8.0, 8.0, 5.0])
+        .tex_offs(26, 0)
+        .add_box([-3.0, 1.0, 2.0], [6.0, 3.0, 1.0])
+        .tex_offs(26, 4)
+        .add_box([-3.0, 3.0, 6.0], [6.0, 1.0, 1.0])
+        .tex_offs(40, 0)
+        .add_box([-3.0, 1.0, 3.0], [1.0, 3.0, 4.0])
+        .add_box_mirrored([2.0, 1.0, 3.0], [1.0, 3.0, 4.0], true)
+        .tex_offs(26, 9)
+        .add_box([-3.0, 7.0, 7.0], [6.0, 5.0, 2.0])
+        .tex_offs(50, 0)
+        .add_box([-5.0, 7.0, 3.0], [1.0, 4.0, 3.0])
+        .add_box_mirrored([4.0, 7.0, 3.0], [1.0, 4.0, 3.0], true)
+        .tex_offs(58, 0)
+        .add_box([-1.0, 0.0, 2.0], [2.0, 1.0, 1.0]);
+    mesh.add_or_replace_child(root, "shell", shell, PartPose::ZERO);
+    let hinge = PartPose::offset(FLAP_HINGE[0], FLAP_HINGE[1], FLAP_HINGE[2]);
+    mesh.add_or_replace_child(root, "flap", one(26, 6, [-3.0, 0.0, 0.0], [6.0, 2.0, 1.0]), hinge);
+    mesh.add_or_replace_child(root, "strap_top_r", one(32, 24, [-3.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
+    mesh.add_or_replace_child(root, "strap_top_l", one(32, 24, [2.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
+    mesh.add_or_replace_child(root, "strap_front_r", one(48, 24, [-3.0, 0.0, -2.75], [1.0, 7.0, 0.5]), PartPose::ZERO);
+    mesh.add_or_replace_child(root, "strap_front_l", one(48, 24, [2.0, 0.0, -2.75], [1.0, 7.0, 0.5]), PartPose::ZERO);
     LayerDefinition::create(mesh, 64, 32).bake_root()
 }
 
-/// The cat's pose, in the bag's frame (texels; angles in degrees). Places are given where they
-/// end up on the bag, so the same numbers fit the kitten and the grown cat at any scale.
-#[derive(Clone)]
-struct Tune {
-    /// The cat's size against the game's own (1 = as the game draws it).
-    cat_scale: f32,
-    /// Where the head's centre sits.
-    head_at: [f32; 3],
-    head_rot: [f32; 3],
-    head_scale: f32,
-    /// Where the right front paw's shoulder sits (the left one mirrors x), its turn, and how far
-    /// the paw reaches, in the bag's texels.
-    paw_at: [f32; 3],
-    paw_rot: [f32; 3],
-    paw_reach: f32,
-    /// The grown cat's paws: where each one's base sits and its turn (the forearm's is unused).
-    arm_at: [f32; 3],
-    arm_rot: [f32; 3],
-    fore_rot: [f32; 3],
-    show_body: bool,
-    show_hind: bool,
-    show_tail: bool,
-    idle_amp: f32,
-    idle_speed: f32,
-}
+/// What a pose is made of: `key = a b c` lines of the tuning file replace the shown cat's numbers.
+/// Places are in the bag's frame (texels, +y down, +z away from the player's back), turns in
+/// degrees (the cat's parts turn in the cat's own frame, which looks along -z).
+const KEYS: [&str; 12] = [
+    // The cat's size against the game's own model of it.
+    "scale",
+    // How far the flap hangs out from the front wall.
+    "open",
+    // The trunk's foot, inside the bag, and its lean out over the front wall.
+    "body_at",
+    "body_rot",
+    // The head's centre, on the trunk, and its turn (the cat looks over the player's shoulder).
+    "head_at",
+    "head_rot",
+    // Each front leg's shoulder and its turn out over the front wall, onto the flap.
+    "arm_r_at",
+    "arm_r_rot",
+    "arm_l_at",
+    "arm_l_rot",
+    // The head's idle sway: degrees, speed.
+    "idle",
+    // The grown cat's paws: 0 flat (2×3×1), 1 the game's thickness (2×3×2), 2 thin (1×3×1).
+    "paw",
+];
 
-impl Default for Tune {
-    fn default() -> Self {
-        Self {
-            cat_scale: 1.0,
-            // The head's centre a little above the shoulders, behind the player's head, tilted.
-            head_at: [0.0, -1.8, 5.8],
-            head_rot: [0.0, 0.0, 22.0],
-            head_scale: 1.0,
-            paw_at: [-0.8, 0.5, 6.8],
-            paw_rot: [-35.0, 28.0, 0.0],
-            paw_reach: 2.5,
-            // The grown cat's paws: bases on the rim's outer corners, crossed under the chin.
-            arm_at: [-1.4, 1.4, 7.6],
-            arm_rot: [175.0, 0.0, -60.0],
-            fore_rot: [0.0, 0.0, 0.0],
-            show_body: false,
-            show_hind: false,
-            show_tail: false,
-            idle_amp: 4.0,
-            idle_speed: 0.08,
-        }
-    }
-}
+/// The grown cat's pose, in `KEYS`' order: sitting on the trunk's top in the well, its head and
+/// neck over the lip, looking up and aside past the player's shoulder, both paws on the flap,
+/// one a little further out (as the game's lying cat holds them).
+const CAT_POSE: [[f32; 3]; KEYS.len()] = [
+    [0.6, 0.0, 0.0],
+    [35.0, 0.0, 0.0],
+    [0.0, 4.0, 4.6],
+    [6.0, 0.0, 0.0],
+    [0.0, 0.0, 5.3],
+    [-12.0, -30.0, 6.0],
+    [-0.8, 2.3, 5.7],
+    [-62.0, 0.0, 0.0],
+    [0.8, 2.2, 5.6],
+    [-56.0, 0.0, 0.0],
+    [4.0, 0.08, 0.0],
+    [0.0, 0.0, 0.0],
+];
+
+/// The kitten's pose: the same seat, only its head over the lip.
+const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
+    [0.5, 0.0, 0.0],
+    [35.0, 0.0, 0.0],
+    [0.0, 4.0, 4.7],
+    [6.0, 0.0, 0.0],
+    [0.0, 1.3, 5.3],
+    [-12.0, -30.0, 6.0],
+    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [4.0, 0.08, 0.0],
+    [0.0, 0.0, 0.0],
+];
+
+#[derive(Clone)]
+struct Tune([[f32; 3]; KEYS.len()]);
 
 impl Tune {
-    /// Lines `key = a b c` (`#` starts a comment); unknown keys and bad numbers are skipped.
-    fn read(text: &str) -> Self {
-        let mut t = Self::default();
+    fn of(kind: Kind) -> Self {
+        Self(match kind {
+            Kind::Kitten => KITTEN_POSE,
+            Kind::Cat => CAT_POSE,
+        })
+    }
+
+    fn get(&self, key: &str) -> [f32; 3] {
+        KEYS.iter().position(|k| *k == key).map_or([0.0; 3], |i| self.0[i])
+    }
+
+    /// Lines `key = a b c` (`#` starts a comment) over `kind`'s pose; unknown keys and bad numbers
+    /// are skipped, and fewer than three numbers set the first ones.
+    fn read(kind: Kind, text: &str) -> Self {
+        let mut t = Self::of(kind);
         for line in text.lines() {
             let line = line.split('#').next().unwrap_or("").trim();
             let Some((key, value)) = line.split_once('=') else { continue };
-            let n: Vec<f32> = value.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-            let v3 = |dst: &mut [f32; 3]| {
-                if let [a, b, c] = n[..] {
-                    *dst = [a, b, c];
-                }
-            };
-            match (key.trim(), n.first().copied()) {
-                ("head_at", _) => v3(&mut t.head_at),
-                ("head_rot", _) => v3(&mut t.head_rot),
-                ("paw_at", _) => v3(&mut t.paw_at),
-                ("paw_rot", _) => v3(&mut t.paw_rot),
-                ("arm_at", _) => v3(&mut t.arm_at),
-                ("arm_rot", _) => v3(&mut t.arm_rot),
-                ("fore_rot", _) => v3(&mut t.fore_rot),
-                ("cat_scale", Some(x)) => t.cat_scale = x,
-                ("head_scale", Some(x)) => t.head_scale = x,
-                ("paw_reach", Some(x)) => t.paw_reach = x,
-                ("show_body", Some(x)) => t.show_body = x != 0.0,
-                ("show_hind", Some(x)) => t.show_hind = x != 0.0,
-                ("show_tail", Some(x)) => t.show_tail = x != 0.0,
-                ("idle_amp", Some(x)) => t.idle_amp = x,
-                ("idle_speed", Some(x)) => t.idle_speed = x,
-                _ => {}
+            let Some(i) = KEYS.iter().position(|k| *k == key.trim()) else { continue };
+            for (dst, n) in t.0[i].iter_mut().zip(value.split_whitespace().filter_map(|v| v.parse().ok())) {
+                *dst = n;
             }
         }
         t
     }
 
-    /// The tuning file's pose, read at most twice a second; the defaults without the file.
-    fn current() -> Self {
-        static CACHE: Mutex<Option<(Instant, Tune)>> = Mutex::new(None);
-        let Some(path) = std::env::var_os("SPIDEY_CATPACK_TUNE") else { return Self::default() };
+    /// `kind`'s pose under the tuning file, which is read at most twice a second; its own pose
+    /// without the file.
+    fn current(kind: Kind) -> Self {
+        static CACHE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+        let Some(path) = std::env::var_os("SPIDEY_CATPACK_TUNE") else { return Self::of(kind) };
         let mut cache = lock(&CACHE);
-        if let Some((at, t)) = cache.as_ref()
-            && at.elapsed().as_millis() < 500
-        {
-            return t.clone();
+        if cache.as_ref().is_none_or(|(at, _)| at.elapsed().as_millis() >= 500) {
+            *cache = Some((Instant::now(), std::fs::read_to_string(path).unwrap_or_default()));
         }
-        let t = std::fs::read_to_string(path).map(|s| Self::read(&s)).unwrap_or_default();
-        *cache = Some((Instant::now(), t.clone()));
-        t
+        Self::read(kind, cache.as_ref().map_or("", |(_, text)| text))
     }
 }
 
@@ -318,54 +419,55 @@ fn rad(deg: [f32; 3]) -> [f32; 3] {
     deg.map(f32::to_radians)
 }
 
-/// Poses the cat for this frame: turned to face away from the player's back, scaled, placed so
-/// its head lands on `head_at`; `age` in ticks drives the idle sway.
-fn pose(cat: &mut ModelPart, kind: Kind, t: &Tune, age: f32) {
-    cat.reset_all_poses();
-    let s = kind.base_scale() * t.cat_scale;
-    // Turned half round about y, a point (x, y, z) of the model lands at root + s·(-x, y, -z).
-    let [hx, hy, hz] = kind.head_centre();
-    let root = [t.head_at[0] + s * hx, t.head_at[1] - s * hy, t.head_at[2] + s * hz];
-    cat.load_pose(PartPose::offset_and_rotation(root[0], root[1], root[2], 0.0, std::f32::consts::PI, 0.0).with_scale(s));
-    let to_model = |p: [f32; 3]| [-(p[0] - root[0]) / s, (p[1] - root[1]) / s, -(p[2] - root[2]) / s];
-    let sway = t.idle_amp.to_radians();
+/// Folds the flap out from the front wall by the pose's angle.
+fn pose_bag(bag: &mut ModelPart, t: &Tune) {
+    if let Some(flap) = bag.get_child_mut("flap") {
+        flap.x_rot = t.get("open")[0].to_radians();
+    }
+}
+
+/// Poses the cat for this frame; `age` in ticks drives the head's idle sway.
+fn pose(cat: &mut ModelPart, t: &Tune, age: f32) {
+    // The cat is turned half round about y: a place (x, y, z) of the bag is (-x, y, -z) of the cat.
+    // Places are the bag's texels whatever the cat's size.
+    let scale = t.get("scale")[0].max(0.1);
+    cat.x_scale = scale;
+    cat.y_scale = scale;
+    cat.z_scale = scale;
+    let place = |part: &mut ModelPart, key: &str| {
+        let [x, y, z] = t.get(key);
+        part.set_pos(-x / scale, y / scale, -z / scale);
+    };
+    if let Some(body) = cat.get_child_mut("body") {
+        place(body, "body_at");
+        let [rx, ry, rz] = rad(t.get("body_rot"));
+        body.set_rotation(rx, ry, rz);
+    }
+    let [amp, speed, _] = t.get("idle");
+    let sway = amp.to_radians();
     if let Some(head) = cat.get_child_mut("head") {
-        let [rx, ry, rz] = rad(t.head_rot);
+        place(head, "head_at");
+        let [rx, ry, rz] = rad(t.get("head_rot"));
         head.set_rotation(
-            rx + 0.5 * sway * (age * t.idle_speed * 0.7).sin(),
-            ry + 0.6 * sway * (age * t.idle_speed * 0.45).sin(),
-            rz + sway * (age * t.idle_speed).sin(),
+            rx + 0.5 * sway * (age * speed * 0.7).sin(),
+            ry + 0.6 * sway * (age * speed * 0.45).sin(),
+            rz + sway * (age * speed).sin(),
         );
-        head.x_scale = t.head_scale;
-        head.y_scale = t.head_scale;
-        head.z_scale = t.head_scale;
     }
-    for (name, side) in [("right_front_leg", 1.0), ("left_front_leg", -1.0)] {
-        let Some(leg) = cat.get_child_mut(name) else { continue };
-        if kind == Kind::Cat {
-            // The paw's base on the rim, pointing up and in towards the chin.
-            let [px, py, pz] = to_model([t.arm_at[0] * side, t.arm_at[1], t.arm_at[2]]);
-            let [ax, ay, az] = rad(t.arm_rot);
-            leg.set_pos(px, py, pz);
-            leg.set_rotation(ax, ay * side, az * side);
-            continue;
-        }
-        let [px, py, pz] = to_model([t.paw_at[0] * side, t.paw_at[1], t.paw_at[2]]);
-        let [lx, ly, lz] = rad(t.paw_rot);
-        leg.set_pos(px, py, pz);
-        leg.set_rotation(lx, ly * side, lz * side);
-        leg.y_scale = t.paw_reach / (kind.leg_length() * s);
-    }
-    for (name, show) in [
-        ("body", t.show_body),
-        ("right_hind_leg", t.show_hind),
-        ("left_hind_leg", t.show_hind),
-        ("tail1", t.show_tail),
-        ("tail2", t.show_tail),
+    let kind = t.get("paw")[0] as i32;
+    for (name, at, rot, of_kind) in [
+        ("arm_r", "arm_r_at", "arm_r_rot", 0),
+        ("arm_l", "arm_l_at", "arm_l_rot", 0),
+        ("thick_r", "arm_r_at", "arm_r_rot", 1),
+        ("thick_l", "arm_l_at", "arm_l_rot", 1),
+        ("thin_r", "arm_r_at", "arm_r_rot", 2),
+        ("thin_l", "arm_l_at", "arm_l_rot", 2),
     ] {
-        if let Some(part) = cat.get_child_mut(name) {
-            part.visible = show;
-        }
+        let Some(arm) = cat.get_child_mut(name) else { continue };
+        place(arm, at);
+        let [rx, ry, rz] = rad(t.get(rot));
+        arm.set_rotation(rx, ry, rz);
+        arm.visible = of_kind == kind;
     }
 }
 
@@ -401,22 +503,19 @@ impl EntityRenderLayer for Layer {
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String> {
         let Some(worn) = shown(entity.id) else { return Ok(()) };
-        let (Some(body), Some(bag)) = (parts.and_then(|p| p.get(HumanoidPart::Body)), BAG.get()) else {
-            return Ok(());
-        };
-        let tune = Tune::current();
+        let Some(body) = parts.and_then(|p| p.get(HumanoidPart::Body)) else { return Ok(()) };
+        let tune = Tune::current(worn.kind);
         draw.push();
         // The model's frame, as `LivingEntityRenderer` sets it up, then the body part's.
         draw.scale([1.0, -1.0, -1.0]);
         draw.translate([0.0, -1.501, 0.0]);
         apply(draw, &body.pose);
-        draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
-        let model = match worn.kind {
-            Kind::Kitten => &KITTEN,
-            Kind::Cat => &CAT,
-        };
-        if let Some(cat) = lock(model).as_mut() {
-            pose(cat, worn.kind, &tune, entity.age);
+        if let Some(bag) = lock(&BAG).as_mut() {
+            pose_bag(bag, &tune);
+            draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
+        }
+        if let Some(cat) = lock(worn.kind.model()).as_mut() {
+            pose(cat, &tune, entity.age);
             draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
         }
         draw.pop();

@@ -38,10 +38,14 @@ what we learned checking them in the game.
 
 ## What we know about our own models
 
-- **Cat backpack** (`native/hmod-src/catpack.rs`): the cat is the game's own model (kitten or grown cat) with
-  a vanilla texture, so every cat variant works. The game's kitten already has a very large head; scaling the
-  head further makes it look wrong. A whole-cat scale below 1 breaks pixel size against the player (accepted
-  for now in development at 0.8, not settled).
+- **Cat backpack** (`native/hmod-src/catpack.rs`): the bag is two halves, a back panel and a front half hinged
+  at its foot and leaning open, so the mouth reads from the side. The cat is our own small model laid out on
+  the game's cat texture (grown: 64×32, kitten: `_baby`, 32×32), so every variant works without a texture of
+  ours: the game's own head, a short upright trunk and two-part front legs cut from the same places of that
+  texture. **Not settled:** the whole-cat scale. Below 1 it breaks pixel size against the player (the cat's
+  pixels are smaller than the player's and the bag's); at 1 the game's head (5 wide) is well over half the
+  player's head. In development the grown cat is drawn at 0.8 and the kitten at 0.65; the owner decides
+  from a side-by-side shot of both sizes. Leg thickness and pose are open too.
 - **Layers vanish in the mod's own poses.** While the mod poses the player (swing, wall run, flips) it draws
   the player itself, and layers added to the player (the cat backpack, other mods' worn things) aren't drawn.
   Open work: a setting to keep them, then drawing them in the posed model.

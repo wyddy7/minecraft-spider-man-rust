@@ -21,7 +21,9 @@ W, H = 64, 32
 BAG = [(22, 23, 31), (34, 35, 44), (48, 48, 56), (64, 63, 70), (84, 82, 86)]
 RIM = [(28, 29, 38), (42, 43, 52), (58, 58, 66), (76, 75, 82), (98, 96, 100)]
 STRAP = [(16, 17, 23), (26, 27, 34), (38, 38, 46), (52, 52, 58), (66, 65, 70)]
-INSIDE = (10, 10, 14)
+# The lining: a grey mesh, lighter than the canvas so the open mouth reads. The zip: Miles's red.
+LINING = [(58, 60, 72), (74, 76, 90), (92, 94, 108)]
+TRIM = [(122, 24, 28), (176, 40, 38)]
 STITCH = (104, 102, 106)
 ZIP = (132, 128, 120)
 METAL = [(96, 98, 108), (150, 152, 160), (205, 206, 210)]
@@ -51,41 +53,71 @@ def face(x, y, w, h, ramp, base):
         fill(x, y, 1, h, ramp[min(base + 1, len(ramp) - 1)])
 
 
-def box(u, v, w, h, d, ramp):
-    """Vanilla box UV at (u, v) for a box w×h×d: top and bottom on the first row, then east,
-    north, west, south. Top brightest, then the faces, bottom darkest."""
+def box(u, v, w, h, d, ramp, inside=()):
+    """Vanilla box UV at (u, v) for a box w×h×d in the body's frame (+y down, +z away from the
+    back): the top and the bottom on the first row, then west, north (towards the player), east,
+    south (seen from behind). Top brightest, bottom darkest. Faces named in `inside` are the bag's
+    lining. Returns the top-left corners of the north and the south face."""
     w, h, d = int(w), int(h), int(d)
-    face(u + d, v, w, d, ramp, 3)  # top
-    face(u + d + w, v, w, d, ramp, 0)  # bottom
-    face(u, v + d, d, h, ramp, 1)  # east
-    face(u + d, v + d, w, h, ramp, 2)  # north
-    face(u + d + w, v + d, d, h, ramp, 1)  # west
-    face(u + d + w + d, v + d, w, h, ramp, 2)  # south
-    return (u + d, v + d, u + 2 * d + w, v + d)  # north and south faces' top-left corners
+    faces = {
+        "top": (u + d, v, w, d, 3),
+        "bottom": (u + d + w, v, w, d, 0),
+        "west": (u, v + d, d, h, 1),
+        "north": (u + d, v + d, w, h, 2),
+        "east": (u + d + w, v + d, d, h, 1),
+        "south": (u + d + w + d, v + d, w, h, 2),
+    }
+    for name, (x, y, fw, fh, base) in faces.items():
+        if name in inside:
+            face(x, y, fw, fh, LINING, 1)
+        else:
+            face(x, y, fw, fh, ramp, base)
+    return (u + d, v + d, u + 2 * d + w, v + d)
 
 
-# The bag's body: 7×7×5. Its south face is the side seen from behind the player.
-_, _, sx, sy = box(0, 0, 7, 7, 5, BAG)
-for i in range(sx + 1, sx + 6, 2):  # stitches along the top and the bottom of the back
-    px[i, sy + 1] = STITCH + (255,)
-    px[i, sy + 5] = STITCH + (255,)
-# Rims: 7×2×1 front and back, 1×2×3 sides. A zip line along the top of the rim.
-nx, ny, rx, ry = box(0, 16, 7, 2, 1, RIM)
-for i in range(rx, rx + 7):
-    px[i, ry] = ZIP + (255,) if i % 2 == 0 else RIM[4] + (255,)
-for i in range(nx, nx + 7):
-    px[i, ny] = ZIP + (255,) if i % 2 == 0 else RIM[4] + (255,)
-box(20, 16, 1, 2, 3, RIM)
-fill(32, 16, 16, 4, INSIDE)  # the inside, seen from above
-# Pocket 5×3×1: a stitched edge and a flap shadow under its top row.
-_, _, px0, py0 = box(0, 24, 5, 3, 1, BAG)
-for i in range(px0, px0 + 5):
-    px[i, py0 + 1] = BAG[0] + (255,)
-px[px0 + 2, py0 + 2] = STITCH + (255,)
-# Buckle: a metal pixel or two.
-fill(16, 24, 4, 2, METAL[1])
-px[17, 24] = METAL[2] + (255,)
-px[18, 25] = METAL[0] + (255,)
+def dot(x, y, c):
+    px[x, y] = c + (255,)
+
+
+# The trunk, 8×8×5. Its south face is seen from behind: a webbing strap down the middle, a zip
+# across the top. Its top is the floor of the well the cat sits in: lining, with a canvas border.
+tnx, tny, tsx, tsy = box(0, 0, 8, 8, 5, BAG)
+fill(5 + 1, 0 + 1, 6, 4, LINING[0])
+fill(tsx + 3, tsy, 2, 8, STRAP[2])
+fill(tsx + 3, tsy, 1, 8, STRAP[3])
+for i in range(tsx, tsx + 8):
+    if i not in (tsx + 3, tsx + 4):
+        dot(i, tsy + 1, STITCH if i % 2 == 0 else BAG[1])
+# The top section's back, 6×3×1: lining towards the cat.
+box(26, 0, 6, 3, 1, BAG, inside=("south",))
+# Its lip, 6×1×1: the red zip along the top.
+box(26, 4, 6, 1, 1, RIM, inside=("north",))
+for i in range(27, 27 + 6):
+    dot(i, 4, TRIM[0])
+# The flap, 6×2×1, unzipped and folded forward: what shows is its lining (south), edged by the
+# red zip; its canvas side (north) lies towards the trunk.
+_, _, fx, fy = box(26, 6, 6, 2, 1, BAG, inside=("south",))
+for i in range(fx, fx + 6):
+    dot(i, fy + 1, TRIM[0])
+# A cheek of the top section, 1×3×4: canvas outside (its west face; the other is mirrored),
+# lining inside, the zip along its top.
+_, cy, _, _ = box(40, 0, 1, 3, 4, BAG, inside=("east",))
+for i in range(40, 44):
+    dot(i, cy, TRIM[0])
+# The front pocket, 6×5×2: a zip line under its top with a red pull, cord across the front.
+_, _, qx, qy = box(26, 9, 6, 5, 2, RIM)
+for i in range(qx, qx + 6):
+    dot(i, qy + 1, BAG[0])
+dot(qx + 4, qy + 1, TRIM[1])
+for k in range(4):
+    dot(qx + 1 + k, qy + 3, STITCH)
+# A side pocket, 1×4×3: mesh, an elastic edge on top.
+_, sy2, _, _ = box(50, 0, 1, 4, 3, RIM)
+for i in range(50, 53):
+    dot(i, sy2, STRAP[4])
+    dot(i, sy2 + 2, BAG[1])
+# The grab handle, 2×1×1.
+box(58, 0, 2, 1, 1, STRAP)
 # Straps: thin black webbing.
 box(32, 24, 1, 1, 5, STRAP)
 box(48, 24, 1, 7, 1, STRAP)
