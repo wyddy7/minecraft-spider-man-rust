@@ -20,6 +20,8 @@ pub const KEYS: [(&str, &str, &str); 2] = [
 pub const COMMANDS: [&str; 1] = ["swingmode"];
 /// The web delay row on the mod's page in Options > Mods.
 const WEB_DELAY: &str = "web_delay";
+/// The camera distance row: the web mode's chase camera on the ground, in blocks.
+const CAMERA: &str = "camera_distance";
 
 /// Whether the player is in their own world (single player or a LAN world they host), as of the
 /// game-side tick: only there does the mod take its commands.
@@ -59,6 +61,9 @@ impl Hooks for Mod {
         let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, 1.0)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
         let _ = r.register_setting(delay);
+        let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, 6.0)
+            .tooltip("How far behind the player the camera stays in web mode, in blocks; it backs off a little more in flight.");
+        let _ = r.register_setting(camera);
     }
 
     /// The chat box lists, colours and completes the mod's commands.
@@ -129,16 +134,19 @@ impl Hooks for Mod {
         Flow::Continue
     }
 
-    /// The web delay row changed: the mod takes it as a quiet `/swingmode delay`, which keeps it.
+    /// A row changed (web delay, camera distance): the mod takes it as a quiet `/swingmode delay` or
+    /// `/swingmode camera`, which keeps it.
     /// Only the last of several steps (a drag, or changes on the title screen) is taken.
     fn setting_changed(&self, host: &mut dyn ClientHost, event: &mut mod_api::SettingChangedEvent<'_>) {
-        if event.key != WEB_DELAY {
-            return;
-        }
-        if let Some(delay) = host.setting_f64(WEB_DELAY).filter(|d| d.is_finite()) {
+        let command = match event.key {
+            WEB_DELAY => "delay",
+            CAMERA => "camera",
+            _ => return,
+        };
+        if let Some(value) = host.setting_f64(event.key).filter(|v| v.is_finite()) {
             let mut ran = ran();
-            ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
-            ran.push(("swingmode".into(), format!("delay {delay:.2} quiet")));
+            ran.retain(|(name, args)| !(name == "swingmode" && args.starts_with(command) && args.ends_with(" quiet")));
+            ran.push(("swingmode".into(), format!("{command} {value:.2} quiet")));
         }
     }
 }

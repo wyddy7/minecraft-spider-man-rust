@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Camera distance: a slider on the mod's page (Options > Mods > Spider-Man > Config, 2 to 12 blocks, 6 as
+  before) and `/swingmode camera`; in flight the camera still backs off 2 blocks more.
+- `/swingmode view` takes an angle from behind, a distance and a height: `/swingmode view 45 2.5 1.4` looks at
+  the player from behind and to the right, close up, for checking poses and what the player wears.
+
 ## 0.2.5 — 2026-11-18
 
 - A `.hmod`, the native mod format of launchers 0.2.70 and later, which no longer load `.hnmod`. On Horizon's
