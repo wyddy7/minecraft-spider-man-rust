@@ -85,6 +85,14 @@ impl Hooks for Mod {
         event.items.push(catpack::item());
     }
 
+    /// The mod's items in the creative inventory: the game has no way for a mod to add a tab
+    /// of its own, so they go at the end of Tools & Utilities (and into the search tab).
+    fn build_creative_mode_tab_contents(&self, host: &mut dyn ClientHost, event: &mut mod_api::BuildCreativeModeTabContentsEvent<'_>) {
+        if event.tab == "minecraft:tools_and_utilities" {
+            event.items.extend(catpack::creative_stack(host));
+        }
+    }
+
     /// The chat box lists, colours and completes the mod's commands.
     fn register_client_commands(
         &self,

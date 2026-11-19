@@ -132,6 +132,14 @@ pub fn item() -> mod_api::Item {
     item
 }
 
+/// An empty bag, for the creative inventory.
+pub fn creative_stack(host: &dyn mod_api::Host) -> Option<mod_api::ItemStack> {
+    let mut saved = mod_api::Compound::default();
+    saved.insert("id".into(), mod_api::Tag::String(ITEM.into()));
+    saved.insert("count".into(), mod_api::Tag::Int(1));
+    mod_api::ItemStack::from_nbt(host, &saved)
+}
+
 /// The test bags `/catpack give` hands out, drawn as the bag
 /// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown
 /// cat, empty. A cat given this way is only a picture: it has no cat's data to let out.
