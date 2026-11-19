@@ -90,7 +90,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The bag's item id.
+/// The bag's item id. It is listed on the mod's own creative tab
+/// (`data/spider_man/horizon/creative_tab/spider_man.json`).
 pub const ITEM: &str = "spider_man:cat_backpack";
 
 /// The bag's item as this run of the game knows it: learnt from the first stack of it seen with
@@ -130,14 +131,6 @@ pub fn item() -> mod_api::Item {
         ("minecraft:damage_resistant".into(), Some(Tag::Compound(fire))),
     ];
     item
-}
-
-/// An empty bag, for the creative inventory.
-pub fn creative_stack(host: &dyn mod_api::Host) -> Option<mod_api::ItemStack> {
-    let mut saved = mod_api::Compound::default();
-    saved.insert("id".into(), mod_api::Tag::String(ITEM.into()));
-    saved.insert("count".into(), mod_api::Tag::Int(1));
-    mod_api::ItemStack::from_nbt(host, &saved)
 }
 
 /// The test bags `/catpack give` hands out, drawn as the bag

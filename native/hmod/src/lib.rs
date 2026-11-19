@@ -26,7 +26,7 @@ const WEB_DELAY: &str = "web_delay";
 /// The camera distance row: the web mode's chase camera on the ground, in blocks.
 const CAMERA: &str = "camera_distance";
 /// The row that puts the others back to their defaults, then turns itself off.
-const RESET: &str = "reset_defaults";
+const RESET: &str = "reset";
 /// The defaults: half the reference web flight (the mod's own default since 0.1), the camera 6 blocks back.
 const DEFAULT_WEB_DELAY: f64 = 0.5;
 const DEFAULT_CAMERA: f64 = 6.0;
@@ -75,22 +75,16 @@ impl Hooks for Mod {
         let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, DEFAULT_CAMERA)
             .tooltip("How far behind the player the camera stays in web mode, in blocks; it backs off a little more in flight.");
         let _ = r.register_setting(camera);
-        let reset = SettingSpec::toggle(RESET, "Reset all to defaults", false)
-            .tooltip("Turn on to put every setting above back to its default; it turns itself off again.");
+        // The page has no button row, so the reset is a row with one thing to click: it reads
+        // "click here", does its work on the click and reads "done" until the page is opened again.
+        let reset = SettingSpec::choice(RESET, "Reset all to defaults", ["click here", "done"], 0)
+            .tooltip("Click to put every setting above back to its default.");
         let _ = r.register_setting(reset);
     }
 
     /// The mod's own items: the cat backpack.
     fn items(&self, _cx: &RegistrationContext, event: &mut mod_api::ItemsEvent<'_>) {
         event.items.push(catpack::item());
-    }
-
-    /// The mod's items in the creative inventory: the game has no way for a mod to add a tab
-    /// of its own, so they go at the end of Tools & Utilities (and into the search tab).
-    fn build_creative_mode_tab_contents(&self, host: &mut dyn ClientHost, event: &mut mod_api::BuildCreativeModeTabContentsEvent<'_>) {
-        if event.tab == "minecraft:tools_and_utilities" {
-            event.items.extend(catpack::creative_stack(host));
-        }
     }
 
     /// The chat box lists, colours and completes the mod's commands.
@@ -207,15 +201,15 @@ impl Hooks for Mod {
     }
 
     /// A row changed (web delay, camera distance): the mod takes it as a quiet `/swingmode delay` or
-    /// `/swingmode camera`, which keeps it. The reset row writes both defaults back (the rows show
-    /// them the next time the page opens) and switches itself off.
+    /// `/swingmode camera`, which keeps it. The reset row, clicked, writes both defaults back (the rows
+    /// show them the next time the page opens) and is ready to be clicked again.
     /// Only the last of several steps (a drag, or changes on the title screen) is taken.
     fn setting_changed(&self, host: &mut dyn ClientHost, event: &mut mod_api::SettingChangedEvent<'_>) {
         if event.key == RESET {
-            if host.setting_bool(RESET) == Some(true) {
+            if host.setting_choice(RESET) == Some(1) {
                 host.set_setting(MOD_ID, WEB_DELAY, &DEFAULT_WEB_DELAY.to_string());
                 host.set_setting(MOD_ID, CAMERA, &DEFAULT_CAMERA.to_string());
-                host.set_setting(MOD_ID, RESET, "false");
+                host.set_setting(MOD_ID, RESET, "0");
                 let mut ran = ran();
                 ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
                 ran.push(("swingmode".into(), format!("delay {DEFAULT_WEB_DELAY:.2} quiet")));
