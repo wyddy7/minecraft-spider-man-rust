@@ -107,15 +107,15 @@ impl Default for Tune {
         Self {
             // Turned to face away from the player's back; head centre about 6 texels behind the
             // body's pivot, level with the shoulders.
-            cat_pos: [0.0, -18.5, 1.5],
+            cat_pos: [0.0, -20.0, 1.5],
             cat_rot_deg: [0.0, 180.0, 0.0],
             cat_scale: 1.0,
-            head_rot_deg: [0.0, 0.0, 12.0],
-            head_scale: 1.0,
+            head_rot_deg: [0.0, 0.0, 10.0],
+            head_scale: 1.15,
             // The right front paw's shoulder in the kitten's own frame; the left one mirrors x.
-            leg_pos: [-1.0, 19.0, -4.5],
-            leg_rot_deg: [-60.0, 20.0, 0.0],
-            leg_len: 2.0,
+            leg_pos: [-0.8, 19.8, -5.2],
+            leg_rot_deg: [-35.0, 28.0, 0.0],
+            leg_len: 1.5,
             show_body: false,
             show_hind: false,
             show_tail: false,
