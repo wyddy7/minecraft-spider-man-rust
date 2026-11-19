@@ -273,12 +273,12 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
             worn.push((id, bag));
         }
     }
-    // The bags on backs, which the rules keep (in this process: the world owner's own world).
-    for (id, stack) in crate::catpack_rules::worn_on_backs() {
-        if let Some(bag) = worn_by(&stack) {
-            worn.retain(|(other, _)| *other != id);
-            worn.push((id, bag));
-        }
+    // The bags on backs, as the server told this client.
+    for (id, kind, variant) in crate::catpack_ui::backs() {
+        let Some(kind) = Kind::parse(&kind) else { continue };
+        let variant = VARIANTS.iter().copied().find(|v| *v == variant).unwrap_or("red").to_owned();
+        worn.retain(|(other, _)| *other != id);
+        worn.push((id, Worn { kind, variant }));
     }
     *lock(&WORN) = worn;
     *lock(&VELOCITY) = velocity;

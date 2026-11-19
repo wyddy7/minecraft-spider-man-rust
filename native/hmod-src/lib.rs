@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use mod_api::{ClientHost, Flow, Hooks, KeyRegistration, Registrar, RegistrationContext, SettingSpec};
 
 pub mod catpack;
+pub mod catpack_net;
 pub mod catpack_rules;
+pub mod catpack_ui;
 
 /// The mod's keys: id, the label Controls shows, the default key.
 pub const KEYS: [(&str, &str, &str); 2] = [
@@ -66,6 +68,7 @@ impl Hooks for Mod {
         for (id, label, key) in KEYS {
             r.register_key_mapping(KeyRegistration::new(id, key).label(label));
         }
+        catpack_net::register(r);
         let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
         let _ = r.register_setting(delay);
@@ -97,6 +100,7 @@ impl Hooks for Mod {
     /// Which cat backpack the local player wears, from their chest slot.
     fn client_tick_post(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientTickPostEvent) {
         catpack::tick(host);
+        catpack_ui::tick(host);
     }
 
     /// The cat backpack draws over both player models.
@@ -162,7 +166,18 @@ impl Hooks for Mod {
     }
 
     fn right_click_empty(&self, host: &mut dyn ClientHost, _event: &mut mod_api::RightClickEmptyEvent) {
-        catpack_rules::right_click_empty(host);
+        catpack_ui::right_click_empty(host);
+    }
+
+    fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
+        catpack_ui::draw(host, event.draw, event.screen.mouse);
+    }
+
+    fn screen_mouse_button_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonPressedPreEvent<'_>) -> Flow {
+        if catpack_ui::click(host, event.screen.mouse, event.button) {
+            event.cancelled = true;
+        }
+        Flow::Continue
     }
 
     fn living_death(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::LivingDeathEvent<'_>) -> Flow {
