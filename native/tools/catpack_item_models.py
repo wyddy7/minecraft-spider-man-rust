@@ -110,23 +110,27 @@ def shell():
     ]
 
 
-def lid_shut():
-    """The lid lying over the well: its outside (the lid box's north face) up."""
+def lid_faces(outside, lining):
+    """The lid's six faces: `outside` and `lining` name the two faces that show them; the edges
+    take a strip of the outside."""
     kx, ky = 16 / BAG_TEX[0], 16 / BAG_TEX[1]
-    out = [27 * kx, 9 * ky, 33 * kx, 13 * ky]
-    edge = [27 * kx, 9 * ky, 33 * kx, 10 * ky]
-    side = [27 * kx, 9 * ky, 28 * kx, 13 * ky]
-    f = {
-        "up": {"uv": out}, "down": {"uv": out},
-        "north": {"uv": edge}, "south": {"uv": edge},
-        "west": {"uv": side, "rotation": 90}, "east": {"uv": side, "rotation": 90},
-    }
-    return element([-3, 0, 3], [6, 1, 4], f, "#bag")
+    canvas = [31 * kx, 8 * ky, 37 * kx, 13 * ky]
+    inner = [37 * kx, 8 * ky, 43 * kx, 13 * ky]
+    edge = [31 * kx, 8 * ky, 37 * kx, 9 * ky]
+    f = {name: {"uv": edge} for name in ("up", "down", "north", "south", "west", "east")}
+    f[outside] = {"uv": canvas}
+    f[lining] = {"uv": inner}
+    return f
+
+
+def lid_shut():
+    """The lid lying over the well."""
+    return element([-3, 0, 2], [6, 1, 5], lid_faces("up", "down"), "#bag")
 
 
 def lid_open():
-    """The lid hanging out from the front wall, lining out."""
-    return bag_box(26, 8, [-3, 1, 6], [6, 4, 1], rotation=([0, 1, 7], "x", -22.5))
+    """The lid standing up behind the cat, lining towards the front."""
+    return element([-3, -4, 1], [6, 5, 1], lid_faces("north", "south"), "#bag")
 
 
 def grown_cat():

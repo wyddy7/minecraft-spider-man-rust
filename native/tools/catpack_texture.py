@@ -94,15 +94,16 @@ box(26, 0, 6, 3, 1, BAG, inside=("south",))
 _, _, lx, ly = box(26, 4, 6, 3, 1, BAG, inside=("north",))
 for i in range(lx, lx + 6):
     dot(i, ly, TRIM[0])
-# The lid, 6×4×1, hinged on the front wall. Its north face is the outside (seen from above when
-# the bag is shut), its south face the lining, edged by the red zip (seen when it hangs open).
-lnx, lny, lsx, lsy = box(26, 8, 6, 4, 1, BAG, inside=("south",))
-face(lnx, lny, 6, 4, BAG, 3)
-for i in range(lsx, lsx + 6):
-    dot(i, lsy + 3, TRIM[0])
-for j in range(lsy, lsy + 4):
-    dot(lsx, j, TRIM[0])
-    dot(lsx + 5, j, TRIM[0])
+# The lid, 6×1×5, hinged on the back. Its top is the outside (seen from above when the bag is
+# shut); its underside is the lining, edged by the red zip on the three free sides (seen from
+# behind when it stands open behind the cat).
+box(26, 8, 6, 1, 5, BAG, inside=("bottom",))
+ux, uy = 26 + 5 + 6, 8  # the underside's top-left corner: 6 wide, 5 deep, the hinge on its first row
+for j in range(uy, uy + 5):
+    dot(ux, j, TRIM[0])
+    dot(ux + 5, j, TRIM[0])
+for i in range(ux, ux + 6):
+    dot(i, uy + 4, TRIM[0])
 # A cheek of the top section, 1×3×4: canvas outside (its west face; the other is mirrored),
 # lining inside, the zip along its top.
 _, cy, _, _ = box(40, 0, 1, 3, 4, BAG, inside=("east",))

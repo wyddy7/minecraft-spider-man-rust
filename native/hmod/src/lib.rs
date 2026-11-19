@@ -68,6 +68,7 @@ impl Hooks for Mod {
         for (id, label, key) in KEYS {
             r.register_key_mapping(KeyRegistration::new(id, key).label(label));
         }
+        r.register_key_mapping(KeyRegistration::new(catpack_ui::KEY, "key.keyboard.g").label("Back catpack"));
         catpack_net::register(r);
         let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
@@ -178,10 +179,11 @@ impl Hooks for Mod {
 
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
         catpack_ui::draw(host, event.draw, event.screen.mouse);
+        catpack_ui::draw_slot(event.draw, event.screen);
     }
 
     fn screen_mouse_button_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonPressedPreEvent<'_>) -> Flow {
-        if catpack_ui::click(host, event.screen.mouse, event.button) {
+        if catpack_ui::click(host, event.screen.mouse, event.button) || catpack_ui::click_slot(event.screen, event.button) {
             event.cancelled = true;
         }
         Flow::Continue

@@ -158,6 +158,10 @@ pub fn command(args: &str) -> Command {
         let on = !FORCED.fetch_xor(true, Ordering::Relaxed);
         return Command::Say(format!("Back catpack on every player: {}", if on { "on" } else { "off" }));
     };
+    if first == "tame" {
+        let line = "/data modify entity @e[type=minecraft:cat,limit=1,sort=nearest] Owner set from entity @s UUID".to_owned();
+        return Command::Send(vec![line], "The nearest cat is yours now (a test shortcut)".into());
+    }
     if first == "give" {
         let lines = GIVE.iter().map(|s| (*s).to_owned()).collect();
         return Command::Send(lines, "Three test bags: use one to put it on your back".into());
@@ -353,8 +357,8 @@ fn worn_by(stack: &mod_api::ItemStack) -> Option<Worn> {
     Some(Worn { kind, variant })
 }
 
-/// Where the lid hinges: the top section's front wall, its top outer edge.
-const LID_HINGE: [f32; 3] = [0.0, 1.0, 7.0];
+/// Where the lid hinges: the top section's back, its top outer edge, by the wearer's back.
+const LID_HINGE: [f32; 3] = [0.0, 1.0, 2.0];
 
 /// The bag in the body's frame, in whole texels (the style's rule: one texture pixel is one model
 /// pixel): +y down from the shoulders, the back towards +z (the body is 8 wide, 12 tall, 4 deep
@@ -364,8 +368,9 @@ const LID_HINGE: [f32; 3] = [0.0, 1.0, 7.0];
 /// - the trunk, as wide as the back, from the chest down to the hips;
 /// - on it a narrower top section, unzipped: a back, two cheeks and a front wall, with a well
 ///   between them where the cat sits on the trunk's top; a grab handle above the back;
-/// - the lid, hinged on the front wall: open, it hangs out in front, lining up; shut, it lies
-///   over the well;
+/// - the lid, hinged on the back: shut, it lies over the well; open, it stands up behind the
+///   cat, lining towards the viewer, so the cat is seen whole from behind (it stands inside the
+///   wearer's head: taken, for the look);
 /// - a big pocket low on the front and a mesh pocket low on each side.
 ///
 /// The straps are thin planes, as vanilla draws flat parts. UV places match
@@ -393,7 +398,7 @@ fn bag() -> ModelPart {
         .add_box([-1.0, 0.0, 2.0], [2.0, 1.0, 1.0]);
     mesh.add_or_replace_child(root, "shell", shell, PartPose::ZERO);
     let hinge = PartPose::offset(LID_HINGE[0], LID_HINGE[1], LID_HINGE[2]);
-    mesh.add_or_replace_child(root, "lid", one(26, 8, [-3.0, 0.0, -1.0], [6.0, 4.0, 1.0]), hinge);
+    mesh.add_or_replace_child(root, "lid", one(26, 8, [-3.0, -1.0, 0.0], [6.0, 1.0, 5.0]), hinge);
     mesh.add_or_replace_child(root, "strap_top_r", one(32, 24, [-3.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
     mesh.add_or_replace_child(root, "strap_top_l", one(32, 24, [2.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
     mesh.add_or_replace_child(root, "strap_front_r", one(48, 24, [-3.0, 0.0, -2.75], [1.0, 7.0, 0.5]), PartPose::ZERO);
@@ -407,7 +412,7 @@ fn bag() -> ModelPart {
 const KEYS: [&str; 13] = [
     // The cat's size against the game's own model of it.
     "scale",
-    // How far the flap hangs out from the front wall.
+    // How far the lid stands up from lying shut, in degrees.
     "open",
     // The trunk's foot, inside the bag, and its lean out over the front wall.
     "body_at",
@@ -430,11 +435,10 @@ const KEYS: [&str; 13] = [
 
 /// The grown cat's pose, in `KEYS`' order: sitting on the trunk's top in the well, by its front
 /// wall, its head and neck over it, looking up and aside past the player's shoulder, both paws
-/// over the wall onto the open lid, one a little further out (as the game's lying cat holds
-/// them).
+/// over the wall, one a little further out (as the game's lying cat holds them).
 const CAT_POSE: [[f32; 3]; KEYS.len()] = [
     [0.6, 0.0, 0.0],
-    [35.0, 0.0, 0.0],
+    [104.0, 0.0, 0.0],
     [0.0, 4.0, 5.0],
     [6.0, 0.0, 0.0],
     [0.0, -0.5, 5.8],
@@ -451,7 +455,7 @@ const CAT_POSE: [[f32; 3]; KEYS.len()] = [
 /// The kitten's pose: the same seat, only its head over the wall.
 const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [0.5, 0.0, 0.0],
-    [35.0, 0.0, 0.0],
+    [104.0, 0.0, 0.0],
     [0.0, 3.0, 5.0],
     [6.0, 0.0, 0.0],
     [0.0, 0.2, 5.7],
@@ -512,12 +516,11 @@ fn rad(deg: [f32; 3]) -> [f32; 3] {
     deg.map(f32::to_radians)
 }
 
-/// The lid's turn, in degrees, as it goes from hanging out in front (`shut` 0, the pose's angle)
-/// up and over to lying on the well (`shut` 1).
+/// The lid's turn: from standing open behind the cat (`shut` 0, the pose's angle up from lying)
+/// down to lying over the well (`shut` 1).
 fn pose_bag(bag: &mut ModelPart, t: &Tune, shut: f32) {
     if let Some(lid) = bag.get_child_mut("lid") {
-        let open = t.get("open")[0];
-        lid.x_rot = (open + (270.0 - open) * shut).to_radians();
+        lid.x_rot = (t.get("open")[0] * (1.0 - shut)).to_radians();
     }
 }
 

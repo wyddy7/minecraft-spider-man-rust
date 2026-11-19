@@ -23,6 +23,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 static BACKS: Mutex<Vec<(u32, String, String, Instant)>> = Mutex::new(Vec::new());
 /// The open window: the bag's stacks by slot, and the inventory's by slot.
 static WINDOW: Mutex<Option<(Vec<(usize, ItemStack)>, Vec<(usize, ItemStack)>)>> = Mutex::new(None);
+/// The bag on this player's own back, whole, for the inventory's back slot.
+static MINE: Mutex<Option<ItemStack>> = Mutex::new(None);
+/// The key that opens the worn bag, as Controls lists it.
+pub const KEY: &str = "catpack";
 /// What the player asked since the last tick, sent with the next one.
 static ASKS: Mutex<Vec<Compound>> = Mutex::new(Vec::new());
 
@@ -64,6 +68,15 @@ pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
         "back" => {
             let Some(Tag::Int(entity)) = told.get(&"e".into()) else { return };
             let entity = *entity as u32;
+            // The wearer's own game is also sent the bag itself.
+            if let Ok(host) = context.client_host()
+                && host.local_player().is_some_and(|p| p.entity().id() == entity)
+            {
+                *lock(&MINE) = match told.get(&"i".into()) {
+                    Some(Tag::Compound(saved)) => ItemStack::from_nbt(host, saved),
+                    _ => None,
+                };
+            }
             let mut all = lock(&BACKS);
             all.retain(|(id, ..)| *id != entity);
             if let Some(kind) = text(&told, "kind") {
@@ -107,6 +120,12 @@ pub fn tick(host: &mut dyn ClientHost) {
     if lock(&WINDOW).is_some() && host.mod_screen() != Some(MOD) {
         *lock(&WINDOW) = None;
         lock(&ASKS).push(message("close", []));
+    }
+    // The bag's key opens the bag on the back.
+    while host.consume_click(MOD, KEY) {
+        if lock(&MINE).is_some() {
+            lock(&ASKS).push(message("open", []));
+        }
     }
     for ask in std::mem::take(&mut *lock(&ASKS)) {
         crate::catpack_net::ask(host, ask);
@@ -168,6 +187,13 @@ pub fn draw(host: &dyn ClientHost, draw: &mut dyn DrawContext, mouse: [f32; 2]) 
     draw.fill([ox + WIDTH - 2.0, oy, 2.0, HEIGHT], 0xFF55_5555);
     draw.text("Back catpack", [ox + 8.0, oy + 6.0], 0xFF40_4040, false);
     draw.text("Inventory", [ox + 8.0, oy + 75.0], 0xFF40_4040, false);
+    if lock(&MINE).is_some() {
+        let [bx, by, bw, bh] = take_off_button(size);
+        let over_button = mouse[0] >= bx && mouse[0] < bx + bw && mouse[1] >= by && mouse[1] < by + bh;
+        draw.fill([bx, by, bw, bh], 0xFF37_3737);
+        draw.fill([bx + 1.0, by + 1.0, bw - 2.0, bh - 2.0], if over_button { 0xFFA0_A0A0 } else { 0xFF8B_8B8B });
+        draw.text("Take off", [bx + (bw - draw.text_width("Take off")) / 2.0, by + 2.0], 0xFFFF_FFFF, true);
+    }
     let over = hovered(size, mouse);
     for (cell, [x, y]) in cells() {
         let (x, y) = (ox + x, oy + y);
@@ -203,10 +229,56 @@ pub fn click(host: &dyn ClientHost, mouse: [f32; 2], button: i32) -> bool {
         return true;
     }
     let size = *lock(&SIZE);
+    let [bx, by, bw, bh] = take_off_button(size);
+    if lock(&MINE).is_some() && mouse[0] >= bx && mouse[0] < bx + bw && mouse[1] >= by && mouse[1] < by + bh {
+        lock(&ASKS).push(message("off", []));
+        return true;
+    }
     match hovered(size, mouse) {
         Some(Cell::Bag(slot)) => lock(&ASKS).push(message("take", [("s", Tag::Int(slot as i32))])),
         Some(Cell::Inventory(slot)) => lock(&ASKS).push(message("put", [("s", Tag::Int(slot as i32))])),
         None => {}
     }
+    true
+}
+
+/// The window's "Take off" button, shown while a bag is on the back: `[x, y, w, h]`.
+fn take_off_button(size: [f32; 2]) -> [f32; 4] {
+    let [ox, oy] = origin(size);
+    [ox + WIDTH - 62.0, oy + 4.0, 54.0, 12.0]
+}
+
+/// The back slot beside the player's own inventory (survival's and creative's): `[x, y]` of its
+/// cell, left of the panel, level with the armour.
+fn back_slot(screen: &mod_api::ScreenView<'_>) -> Option<[f32; 2]> {
+    (matches!(screen.id, "inventory" | "creative") && screen.menu.is_none()).then(|| [screen.rect[0] - CELL - 4.0, screen.rect[1] + 7.0])
+}
+
+/// Draws the back slot on the inventory: the bag worn, or an empty cell.
+pub fn draw_slot(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
+    let Some([x, y]) = back_slot(screen) else { return };
+    let mine = lock(&MINE).clone();
+    draw.fill([x - 3.0, y - 3.0, CELL + 6.0, CELL + 6.0], 0xFF00_0000);
+    draw.fill([x - 2.0, y - 2.0, CELL + 4.0, CELL + 4.0], 0xFFC6_C6C6);
+    draw.fill([x, y, CELL, CELL], 0xFF37_3737);
+    draw.fill([x + 1.0, y + 1.0, CELL - 1.0, CELL - 1.0], 0xFFFF_FFFF);
+    draw.fill([x + 1.0, y + 1.0, CELL - 2.0, CELL - 2.0], 0xFF8B_8B8B);
+    let Some(stack) = mine else { return };
+    draw.gui_draw_item_with(&stack, [x + 1.0, y + 1.0], Some(""));
+    let [mx, my] = screen.mouse;
+    if mx >= x && mx < x + CELL && my >= y && my < y + CELL {
+        draw.fill([x + 1.0, y + 1.0, CELL - 2.0, CELL - 2.0], 0x80FF_FFFF);
+        draw.text("Back catpack: click to take off", [x, y - 12.0], 0xFFFF_FFFF, true);
+    }
+}
+
+/// A click on the back slot takes the bag off into the inventory. True when it was the slot's.
+pub fn click_slot(screen: &mod_api::ScreenView<'_>, button: i32) -> bool {
+    let Some([x, y]) = back_slot(screen) else { return false };
+    let [mx, my] = screen.mouse;
+    if button != 0 || lock(&MINE).is_none() || !(mx >= x && mx < x + CELL && my >= y && my < y + CELL) {
+        return false;
+    }
+    lock(&ASKS).push(message("off", []));
     true
 }

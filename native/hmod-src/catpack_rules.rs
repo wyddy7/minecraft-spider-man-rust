@@ -387,8 +387,18 @@ fn announce(host: &mut dyn ServerHost, wearer: PlayerRef) {
     let Some(level) = wearer.entity().level(host) else { return };
     let news = back_news(host, wearer);
     for player in level.online_players(host).unwrap_or_default() {
-        crate::catpack_net::tell(host, player, news.clone());
+        let news = if player == wearer { own_news(host, wearer, news.clone()) } else { news.clone() };
+        crate::catpack_net::tell(host, player, news);
     }
+}
+
+/// `news` of `wearer`'s back for the wearer's own game: with the bag itself, for their
+/// inventory's back slot.
+fn own_news(host: &mut dyn ServerHost, wearer: PlayerRef, mut news: Compound) -> Compound {
+    if let Some(saved) = back(host, wearer).and_then(|stack| stack.to_nbt(host)) {
+        news.insert("i".into(), Tag::Compound(saved));
+    }
+    news
 }
 
 /// The `back` message for `wearer`.
@@ -457,10 +467,11 @@ fn backs_tick(host: &mut dyn ServerHost, level: mod_api::LevelRef, second: bool)
     if !second {
         return;
     }
-    let news: Vec<Compound> = players.iter().map(|p| back_news(host, *p)).collect();
+    let news: Vec<(PlayerRef, Compound)> = players.iter().map(|p| (*p, back_news(host, *p))).collect();
     for player in &players {
-        for one in &news {
-            crate::catpack_net::tell(host, *player, one.clone());
+        for (wearer, one) in &news {
+            let one = if wearer == player { own_news(host, *wearer, one.clone()) } else { one.clone() };
+            crate::catpack_net::tell(host, *player, one);
         }
     }
 }
