@@ -251,6 +251,10 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
         Some((player.entity().id(), worn_by(&stack)?))
     });
     *lock(&LOCAL) = worn;
+    *lock(&VELOCITY) = host.local_player().and_then(|player| {
+        let v = player.entity().velocity(host)?;
+        Some((player.entity().id(), v.map(|c| c as f32)))
+    });
 }
 
 /// The bag a stack is, by its `custom_data`: `catpack` names the kind, `catpack_cat` the variant.
@@ -333,7 +337,7 @@ const KEYS: [&str; 13] = [
     "arm_r_rot",
     "arm_l_at",
     "arm_l_rot",
-    // The head's idle sway: degrees, speed.
+    // How lively the cat is at rest: 1 as made, 0 still (for shots).
     "idle",
     // The grown cat's paws: 0 flat (2×3×1), 1 the game's thickness (2×3×2), 2 thin (1×3×1).
     "paw",
@@ -356,7 +360,7 @@ const CAT_POSE: [[f32; 3]; KEYS.len()] = [
     [-62.0, 0.0, 0.0],
     [0.8, 0.4, 6.2],
     [-56.0, 0.0, 0.0],
-    [4.0, 0.08, 0.0],
+    [1.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
     [-1.0, 0.0, 0.0],
 ];
@@ -373,7 +377,7 @@ const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [0.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
-    [4.0, 0.08, 0.0],
+    [1.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
     [-1.0, 0.0, 0.0],
 ];
@@ -425,96 +429,273 @@ fn rad(deg: [f32; 3]) -> [f32; 3] {
     deg.map(f32::to_radians)
 }
 
-/// Sets the lid: hanging out in front by the pose's angle, or, as `hide` goes to 1, swung back
-/// to lie over the well.
-fn pose_bag(bag: &mut ModelPart, t: &Tune, hide: f32) {
+/// The lid's turn, in degrees, as it goes from hanging out in front (`shut` 0, the pose's angle)
+/// up and over to lying on the well (`shut` 1).
+fn pose_bag(bag: &mut ModelPart, t: &Tune, shut: f32) {
     if let Some(lid) = bag.get_child_mut("lid") {
         let open = t.get("open")[0];
-        // The lid waits for the cat to duck, then swings shut.
-        let shut = ((hide - 0.5) / 0.5).clamp(0.0, 1.0);
-        lid.x_rot = (open + (-90.0 - open) * shut).to_radians();
+        lid.x_rot = (open + (270.0 - open) * shut).to_radians();
     }
 }
 
-/// How deep the cat ducks into the well when it hides, in the bag's texels.
+/// How deep the cat ducks into the well when it hides, and how far it draws back from the front
+/// wall as it does, in the bag's texels.
 const DUCK: f32 = 3.4;
-/// How far it draws back from the front wall as it ducks.
 const DRAW_BACK: f32 = 1.5;
-/// How long the cat stays hidden after its carrier is hurt, and how long it takes to duck and
-/// to come back out, in seconds.
-const HIDE_FOR: f32 = 4.0;
-const DUCK_IN: f32 = 0.35;
-const COME_OUT: f32 = 0.6;
+/// The hiding, in ticks after the carrier is hurt: a start (the cat jerks up), the dive and the
+/// lid's slam, then from `PEEK_AT` the lid lifts and the cat looks out from under it, and at
+/// `OUT_AT` it comes back out.
+const FLINCH: f32 = 2.0;
+const PEEK_AT: f32 = 56.0;
+const OUT_AT: f32 = 84.0;
 
-/// Each carrier's hiding: how far the cat has ducked (0 out, 1 hidden with the lid shut), when
-/// that was last moved on, and until when it stays hidden.
-static HIDING: Mutex<Vec<(u32, f32, Instant, Instant)>> = Mutex::new(Vec::new());
+/// A damped spring, stepped in ticks: what gives the motion its weight (a turn that overshoots
+/// and settles, a lid that bounces).
+#[derive(Clone, Copy, Default)]
+struct Spring {
+    x: f32,
+    v: f32,
+}
 
-/// How far `entity`'s cat has ducked this frame; `hurt` sends it into the bag for `HIDE_FOR`.
-fn hiding(entity: u32, hurt: bool) -> f32 {
-    let now = Instant::now();
-    let mut all = lock(&HIDING);
-    // Carriers not drawn for a while are forgotten.
-    all.retain(|(_, _, at, _)| now.duration_since(*at).as_secs_f32() < 30.0);
-    let i = all.iter().position(|(id, ..)| *id == entity).unwrap_or_else(|| {
-        all.push((entity, 0.0, now, now));
+impl Spring {
+    fn step(&mut self, target: f32, stiffness: f32, damping: f32, dt: f32) {
+        // Small steps keep a stiff spring stable at a low frame rate.
+        let steps = (dt / 0.25).ceil().max(1.0);
+        let h = dt / steps;
+        for _ in 0..steps as usize {
+            self.v += ((target - self.x) * stiffness - self.v * damping) * h;
+            self.x += self.v * h;
+        }
+    }
+}
+
+/// One carrier's cat in motion.
+#[derive(Clone, Copy)]
+struct Motion {
+    entity: u32,
+    /// The carrier's age at the last frame, and at the last hit.
+    age: f32,
+    hit: f32,
+    was_hurt: bool,
+    body_rot: f32,
+    /// How far the cat has ducked (0 out, 1 down in the well) and each paw after it, the lid (0
+    /// hanging open, 1 shut), the head's turn, nod and tilt in degrees on top of the pose's, the
+    /// trunk's lean, and the whole cat's bob in texels.
+    duck: Spring,
+    paws: [Spring; 2],
+    lid: Spring,
+    yaw: Spring,
+    pitch: Spring,
+    roll: Spring,
+    lean: Spring,
+    bob: Spring,
+}
+
+/// What `Motion` gives a frame's pose.
+#[derive(Clone, Copy, Default)]
+struct Frame {
+    duck: f32,
+    paws: [f32; 2],
+    shut: f32,
+    yaw: f32,
+    pitch: f32,
+    roll: f32,
+    lean: f32,
+    bob: f32,
+    /// The paws' kneading, degrees each.
+    knead: [f32; 2],
+    hidden: bool,
+}
+
+static MOTION: Mutex<Vec<Motion>> = Mutex::new(Vec::new());
+/// The local player's entity id and velocity (blocks a tick), as of the last client tick: what
+/// the render state doesn't carry.
+static VELOCITY: Mutex<Option<(u32, [f32; 3])>> = Mutex::new(None);
+
+/// A number from 0 to 1 that stays the same for `entity` through one `slot` of time.
+fn chance(entity: u32, slot: i32, salt: u32) -> f32 {
+    let mut h = entity.wrapping_mul(0x9E37_79B1) ^ (slot as u32).wrapping_mul(0x85EB_CA6B) ^ salt.wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    (h & 0xFFFF) as f32 / 65535.0
+}
+
+/// Moves `entity`'s cat on to this frame and says how it is held.
+///
+/// At rest it lives: it looks around (a new place every few seconds, now and then a quick
+/// tilt), breathes, and kneads the lid. It has weight: the head lags behind the carrier's turns
+/// and leans into them, bobs with their steps, sinks as they jump and lifts as they fall, and
+/// hunkers down at speed while the lid flutters. Hurt, the carrier sends it into the bag: a
+/// start, a dive, the lid slamming with a bounce; then the lid lifts and it looks out both ways
+/// from under it, and it pops back out, head first, one paw after the other.
+fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
+    let [amount, _, _] = t.get("idle");
+    let age = entity.age;
+    let living = entity.living.as_ref();
+    let hurt = living.is_some_and(|l| l.has_red_overlay);
+    let body_rot = living.map_or(0.0, |l| l.body_rot);
+    let mut all = lock(&MOTION);
+    // Carriers not drawn for a while are forgotten (their age stops while they aren't).
+    if all.len() > 64 {
+        all.clear();
+    }
+    let i = all.iter().position(|m| m.entity == entity.id).unwrap_or_else(|| {
+        all.push(Motion {
+            entity: entity.id,
+            age,
+            hit: f32::NEG_INFINITY,
+            was_hurt: hurt,
+            body_rot,
+            duck: Spring::default(),
+            paws: [Spring::default(); 2],
+            lid: Spring::default(),
+            yaw: Spring::default(),
+            pitch: Spring::default(),
+            roll: Spring::default(),
+            lean: Spring::default(),
+            bob: Spring::default(),
+        });
         all.len() - 1
     });
-    let (_, amount, at, until) = &mut all[i];
-    if hurt {
-        *until = now + std::time::Duration::from_secs_f32(HIDE_FOR);
+    let m = &mut all[i];
+    // A step back in age is another world or a respawn: start over from rest.
+    let dt = if age < m.age { 0.0 } else { (age - m.age).min(4.0) };
+    if age < m.age {
+        m.hit = f32::NEG_INFINITY;
     }
-    let dt = now.duration_since(*at).as_secs_f32().min(0.25);
-    *at = now;
-    *amount = if now < *until { (*amount + dt / DUCK_IN).min(1.0) } else { (*amount - dt / COME_OUT).max(0.0) };
-    *amount
+    m.age = age;
+    if hurt && !m.was_hurt {
+        m.hit = age;
+    }
+    m.was_hurt = hurt;
+    let since = age - m.hit;
+
+    // The carrier: how fast they turn (degrees a tick), walk, rise and move.
+    let mut turn = (body_rot - m.body_rot).rem_euclid(360.0);
+    if turn > 180.0 {
+        turn -= 360.0;
+    }
+    let turn = if dt > 0.0 { (turn / dt).clamp(-30.0, 30.0) } else { 0.0 };
+    m.body_rot = body_rot;
+    let (walk, stride) = living.map_or((0.0, 0.0), |l| (l.walk_animation_speed.clamp(0.0, 1.5), l.walk_animation_pos));
+    let velocity = lock(&VELOCITY).filter(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| v);
+    let rise = velocity[1].clamp(-1.5, 1.0);
+    let speed = velocity[0].hypot(velocity[2]).min(2.0);
+    let rush = ((speed - 0.35) / 0.6).clamp(0.0, 1.0);
+
+    // Where the hiding wants the cat and the lid.
+    let (duck_to, shut_to, hiding) = if since < FLINCH {
+        (-0.18, 0.0, true)
+    } else if since < PEEK_AT {
+        (1.0, if m.duck.x > 0.7 { 1.0 } else { 0.0 }, true)
+    } else if since < OUT_AT {
+        (0.42, 0.74, true)
+    } else {
+        (0.25 * rush, 0.0, false)
+    };
+
+    // Where the head wants to look: every three seconds a new place, held; under the lid, out
+    // one way and then the other.
+    let slot = ((age + (entity.id % 97) as f32 * 7.0) / 60.0).floor() as i32;
+    let mut look = [(chance(entity.id, slot, 1) - 0.5) * 70.0, (chance(entity.id, slot, 2) - 0.6) * 22.0];
+    if chance(entity.id, slot, 3) < 0.25 {
+        // Now and then it looks round at its carrier.
+        look = [48.0, -14.0];
+    }
+    if since >= PEEK_AT && since < OUT_AT {
+        look = [if since < (PEEK_AT + OUT_AT) / 2.0 { -38.0 } else { 30.0 }, 4.0];
+    } else if hiding {
+        look = [0.0, 10.0];
+    }
+    let steps = (stride * 0.6662).cos();
+    let yaw_to = look[0] * amount - turn * 3.0;
+    let pitch_to = look[1] * amount + if since < FLINCH { -24.0 } else { 0.0 } + rise * -22.0 + rush * 14.0 + walk * 3.0 * (stride * 1.3324).sin();
+    let roll_to = turn * 1.4 + walk * 4.0 * steps;
+    let lean_to = turn * 0.8 + walk * 3.0 * steps;
+    let bob_to = rise * 1.4 + walk * 0.3 * (stride * 1.3324).cos().abs() + amount * 0.12 * (age * 0.11).sin();
+    // The lid flutters at speed, lifts as the carrier falls and swings with their steps.
+    let lid_to = shut_to + if hiding { 0.0 } else { rush * 0.05 * (age * 1.9).sin() + (-rise * 0.25).clamp(0.0, 0.3) + walk * 0.02 * (stride * 1.3324).sin() };
+
+    if dt > 0.0 {
+        // Down fast, up with a bounce; the paws a beat behind the head, one after the other.
+        let (k, d) = if duck_to > m.duck.x { (0.55, 0.95) } else { (0.26, 0.5) };
+        m.duck.step(duck_to, k, d, dt);
+        m.paws[0].step(duck_to.max(0.0), k * 0.75, d * 0.95, dt);
+        m.paws[1].step(duck_to.max(0.0), k * 0.5, d * 0.85, dt);
+        let (k, d) = if lid_to > m.lid.x { (0.7, 0.55) } else { (0.22, 0.38) };
+        m.lid.step(lid_to, k, d, dt);
+        // The lid can't pass the top of the bag: it bounces off it.
+        if m.lid.x > 1.0 {
+            m.lid.x = 1.0;
+            m.lid.v *= -0.45;
+        }
+        m.yaw.step(yaw_to, 0.12, 0.48, dt);
+        m.pitch.step(pitch_to, 0.16, 0.5, dt);
+        m.roll.step(roll_to, 0.2, 0.42, dt);
+        m.lean.step(lean_to, 0.18, 0.5, dt);
+        m.bob.step(bob_to, 0.3, 0.55, dt);
+        // A quick tilt of the head as a new look begins, as a cat's ear flicks.
+        let into = (age + (entity.id % 97) as f32 * 7.0).rem_euclid(60.0);
+        if into < dt && chance(entity.id, slot, 4) < 0.4 && !hiding {
+            m.roll.v += 4.0 * amount * if chance(entity.id, slot, 5) < 0.5 { 1.0 } else { -1.0 };
+        }
+    }
+    // Kneading: a few seconds now and then, the paws pressing in turn.
+    let kneading = if !hiding && chance(entity.id, slot, 6) < 0.3 { amount * (1.0 - rush) } else { 0.0 };
+    let press = (age * 0.45).sin();
+    Frame {
+        duck: m.duck.x,
+        paws: [m.paws[0].x, m.paws[1].x],
+        shut: m.lid.x.max(-0.08),
+        yaw: m.yaw.x.clamp(-75.0, 75.0),
+        pitch: m.pitch.x.clamp(-35.0, 35.0),
+        roll: m.roll.x.clamp(-25.0, 25.0),
+        lean: m.lean.x.clamp(-15.0, 15.0),
+        bob: m.bob.x.clamp(-1.2, 1.6),
+        knead: [9.0 * kneading * press.max(0.0), 9.0 * kneading * (-press).max(0.0)],
+        hidden: m.duck.x > 0.9 && m.lid.x > 0.93,
+    }
 }
 
-/// Poses the cat for this frame; `age` in ticks drives the head's idle sway, `hide` (0 to 1)
-/// ducks it into the well, out of sight once the lid is shut.
-fn pose(cat: &mut ModelPart, t: &Tune, age: f32, hide: f32) {
-    cat.visible = hide < 0.98;
-    // The cat is turned half round about y: a place (x, y, z) of the bag is (-x, y, -z) of the cat.
-    // Places are the bag's texels whatever the cat's size.
+/// Poses the cat for this frame as `f` holds it.
+fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
+    cat.visible = !f.hidden;
+    // The cat is turned half round about y: a place (x, y, z) of the bag is (-x, y, -z) of the
+    // cat. Places are the bag's texels whatever the cat's size.
     let scale = t.get("scale")[0].max(0.1);
     cat.x_scale = scale;
     cat.y_scale = scale;
     cat.z_scale = scale;
-    let place = |part: &mut ModelPart, key: &str| {
+    // Ducking, a part also draws back from the front wall, so nothing of it shows through.
+    let place = |part: &mut ModelPart, key: &str, duck: f32, bob: f32| {
         let [x, y, z] = t.get(key);
-        // Ducking, it also draws back from the front wall, so nothing of it shows through.
-        let duck = (hide / 0.6).min(1.0);
-        part.set_pos(-x / scale, (y + DUCK * duck) / scale, -(z - DRAW_BACK * duck) / scale);
+        let back = duck.clamp(0.0, 1.0);
+        part.set_pos(-x / scale, (y + DUCK * duck + bob) / scale, -(z - DRAW_BACK * back) / scale);
     };
     if let Some(body) = cat.get_child_mut("body") {
-        place(body, "body_at");
+        place(body, "body_at", f.duck, f.bob * 0.6);
         let [rx, ry, rz] = rad(t.get("body_rot"));
-        body.set_rotation(rx, ry, rz);
+        body.set_rotation(rx, ry, rz + f.lean.to_radians());
     }
-    let [amp, speed, _] = t.get("idle");
-    let sway = amp.to_radians();
     if let Some(head) = cat.get_child_mut("head") {
-        place(head, "head_at");
+        place(head, "head_at", f.duck, f.bob);
         let [rx, ry, rz] = rad(t.get("head_rot"));
-        head.set_rotation(
-            rx + 0.5 * sway * (age * speed * 0.7).sin(),
-            ry + 0.6 * sway * (age * speed * 0.45).sin(),
-            rz + sway * (age * speed).sin(),
-        );
+        head.set_rotation(rx + f.pitch.to_radians(), ry + f.yaw.to_radians(), rz + f.roll.to_radians());
     }
     let kind = t.get("paw")[0] as i32;
-    for (name, at, rot, of_kind) in [
-        ("arm_r", "arm_r_at", "arm_r_rot", 0),
-        ("arm_l", "arm_l_at", "arm_l_rot", 0),
-        ("thick_r", "arm_r_at", "arm_r_rot", 1),
-        ("thick_l", "arm_l_at", "arm_l_rot", 1),
-        ("thin_r", "arm_r_at", "arm_r_rot", 2),
-        ("thin_l", "arm_l_at", "arm_l_rot", 2),
+    for (name, at, rot, of_kind, side) in [
+        ("arm_r", "arm_r_at", "arm_r_rot", 0, 0),
+        ("arm_l", "arm_l_at", "arm_l_rot", 0, 1),
+        ("thick_r", "arm_r_at", "arm_r_rot", 1, 0),
+        ("thick_l", "arm_l_at", "arm_l_rot", 1, 1),
+        ("thin_r", "arm_r_at", "arm_r_rot", 2, 0),
+        ("thin_l", "arm_l_at", "arm_l_rot", 2, 1),
     ] {
         let Some(arm) = cat.get_child_mut(name) else { continue };
-        place(arm, at);
+        place(arm, at, f.paws[side], f.bob * 0.6);
         let [rx, ry, rz] = rad(t.get(rot));
-        arm.set_rotation(rx, ry, rz);
+        arm.set_rotation(rx + f.knead[side].to_radians(), ry, rz);
         arm.visible = of_kind == kind;
     }
 }
@@ -558,17 +739,17 @@ impl EntityRenderLayer for Layer {
         draw.scale([1.0, -1.0, -1.0]);
         draw.translate([0.0, -1.501, 0.0]);
         apply(draw, &body.pose);
-        let hurt = entity.living.as_ref().is_some_and(|l| l.has_red_overlay);
-        let hide = match tune.get("hide")[0] {
-            h if h >= 0.0 => h,
-            _ => hiding(entity.id, hurt),
+        // The tuning file's `hide` holds the cat that far ducked, for looking at it.
+        let frame = match tune.get("hide")[0] {
+            h if h >= 0.0 => Frame { duck: h, paws: [h; 2], shut: ((h - 0.5) / 0.5).clamp(0.0, 1.0), hidden: h > 0.98, ..Frame::default() },
+            _ => motion(entity, &tune),
         };
         if let Some(bag) = lock(&BAG).as_mut() {
-            pose_bag(bag, &tune, hide);
+            pose_bag(bag, &tune, frame.shut);
             draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
         }
         if let Some(cat) = lock(worn.kind.model()).as_mut() {
-            pose(cat, &tune, entity.age, hide);
+            pose(cat, &tune, &frame);
             draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
         }
         draw.pop();
