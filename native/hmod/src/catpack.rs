@@ -143,7 +143,7 @@ pub fn bake(host: &dyn mod_api::ClientHost) {
     *lock(&CAT) = host.bake_layer(Kind::Cat.layer()).map(|mut cat| {
         for name in ["right_front_leg", "left_front_leg"] {
             if let Some(leg) = cat.get_child_mut(name) {
-                *leg = elbowed(leg, ELBOW);
+                *leg = paw();
             }
         }
         cat
@@ -151,66 +151,16 @@ pub fn bake(host: &dyn mod_api::ClientHost) {
     let _ = BAG.set(bag());
 }
 
-/// Where a grown cat's front leg (10 texels) bends: shoulder to elbow, then elbow to paw.
-const ELBOW: f32 = 5.0;
-
-/// The game's leg cut in two at `at` texels down: the leg keeps its upper part and gets a child
-/// `forearm`, pivoting at the elbow, with the rest. The faces are the leg's own, cut with their
-/// texture (`v` follows the cut), so any cat's texture lies on it pixel for pixel; each piece gets
-/// a cap at the cut so the bent elbow shows no hole.
-fn elbowed(leg: &ModelPart, at: f32) -> ModelPart {
-    use mod_api::{ModelPolygon, ModelVertex};
-    let length = leg
-        .polygons
-        .iter()
-        .flat_map(|p| p.vertices.iter().map(|v| v.pos[1]))
-        .fold(0.0f32, f32::max);
-    let (mut upper, mut lower) = (Vec::new(), Vec::new());
-    // The cap at the top (y = 0) and the paw's sole (y = length).
-    let mut top_cap = None;
-    for poly in &leg.polygons {
-        let ys: Vec<f32> = poly.vertices.iter().map(|v| v.pos[1]).collect();
-        if ys.iter().all(|y| *y == 0.0) {
-            top_cap = Some(poly.clone());
-            upper.push(poly.clone());
-            continue;
-        }
-        if ys.iter().all(|y| *y == length) {
-            lower.push(shift(poly, -at));
-            continue;
-        }
-        // A side: its top corners at y = 0, its bottom ones at y = length.
-        let v_at = |y: f32| {
-            let top = poly.vertices.iter().find(|v| v.pos[1] == 0.0).map_or(0.0, |v| v.v);
-            let bottom = poly.vertices.iter().find(|v| v.pos[1] == length).map_or(0.0, |v| v.v);
-            top + (bottom - top) * y / length
-        };
-        let cut = |lo: f32, hi: f32, dy: f32| {
-            let vertices = poly.vertices.map(|v| {
-                let y = if v.pos[1] == 0.0 { lo } else { hi };
-                ModelVertex::new([v.pos[0], y + dy, v.pos[2]], v.u, v_at(y))
-            });
-            ModelPolygon::new(vertices, poly.normal)
-        };
-        upper.push(cut(0.0, at, 0.0));
-        lower.push(cut(at, length, -at));
-    }
-    if let Some(cap) = top_cap {
-        // The upper piece's lower end and the forearm's upper end, both in fur.
-        let flipped = ModelPolygon::new(
-            [cap.vertices[3], cap.vertices[2], cap.vertices[1], cap.vertices[0]],
-            [-cap.normal[0], -cap.normal[1], -cap.normal[2]],
-        );
-        upper.push(shift(&flipped, at));
-        lower.push(cap);
-    }
-    let forearm = ModelPart::new(lower, Vec::new(), PartPose::offset_and_rotation(0.0, at, 0.0, 0.0, 0.0, 0.0));
-    ModelPart::new(upper, vec![("forearm".to_owned(), forearm)], leg.initial_pose())
-}
-
-fn shift(poly: &mod_api::ModelPolygon, dy: f32) -> mod_api::ModelPolygon {
-    let vertices = poly.vertices.map(|v| mod_api::ModelVertex::new([v.pos[0], v.pos[1] + dy, v.pos[2]], v.u, v.v));
-    mod_api::ModelPolygon::new(vertices, poly.normal)
+/// A paw folded over the bag's rim: a 1×3×1 box on the cat texture's front leg, at the rows that
+/// end in the light paw, so every cat's texture lies on it pixel for pixel. The game's leg (2×10)
+/// is twice as thick and three times as long as a paw resting on a rim reads.
+fn paw() -> ModelPart {
+    let mut mesh = MeshDefinition::new();
+    let root = mesh.root();
+    let cubes = CubeListBuilder::create().tex_offs(40, 8).add_box([-0.5, 0.0, -0.5], [1.0, 3.0, 1.0]);
+    mesh.add_or_replace_child(root, "paw", cubes, PartPose::ZERO);
+    let baked = LayerDefinition::create(mesh, 64, 32).bake_root();
+    baked.get_child("paw").cloned().unwrap_or(baked)
 }
 
 /// Each client tick: which bag the local player wears, read from their chest slot.
@@ -278,8 +228,7 @@ struct Tune {
     paw_at: [f32; 3],
     paw_rot: [f32; 3],
     paw_reach: f32,
-    /// The grown cat's elbowed legs: the shoulder's place, the upper arm's turn and the forearm's
-    /// turn from it.
+    /// The grown cat's paws: where each one's base sits and its turn (the forearm's is unused).
     arm_at: [f32; 3],
     arm_rot: [f32; 3],
     fore_rot: [f32; 3],
@@ -293,16 +242,18 @@ struct Tune {
 impl Default for Tune {
     fn default() -> Self {
         Self {
-            cat_scale: 0.8,
-            head_at: [0.0, -1.5, 5.5],
-            head_rot: [0.0, 0.0, 10.0],
+            cat_scale: 1.0,
+            // The head's centre a little above the shoulders, behind the player's head, tilted.
+            head_at: [0.0, -1.8, 5.8],
+            head_rot: [0.0, 0.0, 22.0],
             head_scale: 1.0,
             paw_at: [-0.8, 0.5, 6.8],
             paw_rot: [-35.0, 28.0, 0.0],
             paw_reach: 2.5,
-            arm_at: [-1.2, 3.5, 6.0],
-            arm_rot: [-160.0, 12.0, 0.0],
-            fore_rot: [100.0, 0.0, 0.0],
+            // The grown cat's paws: bases on the rim's outer corners, crossed under the chin.
+            arm_at: [-1.4, 1.4, 7.6],
+            arm_rot: [175.0, 0.0, -60.0],
+            fore_rot: [0.0, 0.0, 0.0],
             show_body: false,
             show_hind: false,
             show_tail: false,
@@ -392,14 +343,11 @@ fn pose(cat: &mut ModelPart, kind: Kind, t: &Tune, age: f32) {
     for (name, side) in [("right_front_leg", 1.0), ("left_front_leg", -1.0)] {
         let Some(leg) = cat.get_child_mut(name) else { continue };
         if kind == Kind::Cat {
+            // The paw's base on the rim, pointing up and in towards the chin.
             let [px, py, pz] = to_model([t.arm_at[0] * side, t.arm_at[1], t.arm_at[2]]);
             let [ax, ay, az] = rad(t.arm_rot);
             leg.set_pos(px, py, pz);
             leg.set_rotation(ax, ay * side, az * side);
-            if let Some(fore) = leg.get_child_mut("forearm") {
-                let [fx, fy, fz] = rad(t.fore_rot);
-                fore.set_rotation(fx, fy * side, fz * side);
-            }
             continue;
         }
         let [px, py, pz] = to_model([t.paw_at[0] * side, t.paw_at[1], t.paw_at[2]]);
