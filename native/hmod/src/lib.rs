@@ -22,6 +22,13 @@ pub const COMMANDS: [&str; 1] = ["swingmode"];
 const WEB_DELAY: &str = "web_delay";
 /// The camera distance row: the web mode's chase camera on the ground, in blocks.
 const CAMERA: &str = "camera_distance";
+/// The row that puts the others back to their defaults, then turns itself off.
+const RESET: &str = "reset_defaults";
+/// The defaults: half the reference web flight (the mod's own default since 0.1), the camera 6 blocks back.
+const DEFAULT_WEB_DELAY: f64 = 0.5;
+const DEFAULT_CAMERA: f64 = 6.0;
+/// The mod's id, as its settings are kept under.
+const MOD_ID: &str = "spider_man";
 
 /// Whether the player is in their own world (single player or a LAN world they host), as of the
 /// game-side tick: only there does the mod take its commands.
@@ -58,12 +65,15 @@ impl Hooks for Mod {
         for (id, label, key) in KEYS {
             r.register_key_mapping(KeyRegistration::new(id, key).label(label));
         }
-        let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, 1.0)
+        let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
         let _ = r.register_setting(delay);
-        let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, 6.0)
+        let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, DEFAULT_CAMERA)
             .tooltip("How far behind the player the camera stays in web mode, in blocks; it backs off a little more in flight.");
         let _ = r.register_setting(camera);
+        let reset = SettingSpec::toggle(RESET, "Reset all to defaults", false)
+            .tooltip("Turn on to put every setting above back to its default; it turns itself off again.");
+        let _ = r.register_setting(reset);
     }
 
     /// The chat box lists, colours and completes the mod's commands.
@@ -135,9 +145,22 @@ impl Hooks for Mod {
     }
 
     /// A row changed (web delay, camera distance): the mod takes it as a quiet `/swingmode delay` or
-    /// `/swingmode camera`, which keeps it.
+    /// `/swingmode camera`, which keeps it. The reset row writes both defaults back (the rows show
+    /// them the next time the page opens) and switches itself off.
     /// Only the last of several steps (a drag, or changes on the title screen) is taken.
     fn setting_changed(&self, host: &mut dyn ClientHost, event: &mut mod_api::SettingChangedEvent<'_>) {
+        if event.key == RESET {
+            if host.setting_bool(RESET) == Some(true) {
+                host.set_setting(MOD_ID, WEB_DELAY, &DEFAULT_WEB_DELAY.to_string());
+                host.set_setting(MOD_ID, CAMERA, &DEFAULT_CAMERA.to_string());
+                host.set_setting(MOD_ID, RESET, "false");
+                let mut ran = ran();
+                ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
+                ran.push(("swingmode".into(), format!("delay {DEFAULT_WEB_DELAY:.2} quiet")));
+                ran.push(("swingmode".into(), format!("camera {DEFAULT_CAMERA:.2} quiet")));
+            }
+            return;
+        }
         let command = match event.key {
             WEB_DELAY => "delay",
             CAMERA => "camera",

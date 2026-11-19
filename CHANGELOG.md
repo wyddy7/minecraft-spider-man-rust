@@ -4,6 +4,9 @@
 
 - Camera distance: a slider on the mod's page (Options > Mods > Spider-Man > Config, 2 to 12 blocks, 6 as
   before) and `/swingmode camera`; in flight the camera still backs off 2 blocks more.
+- "Reset all to defaults" on the mod's page puts the web delay and the camera distance back (the rows show it the
+  next time the page opens).
+- The web delay row's default is 0.5 again, the mod's own default (0.2.5's row said 1).
 - `/swingmode view` takes an angle from behind, a distance and a height: `/swingmode view 45 2.5 1.4` looks at
   the player from behind and to the right, close up, for checking poses and what the player wears.
 
