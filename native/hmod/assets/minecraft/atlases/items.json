@@ -1,0 +1,13 @@
+{
+ "sources": [
+  {
+   "type": "minecraft:single",
+   "resource": "spider_man:entity/catpack"
+  },
+  {
+   "type": "minecraft:directory",
+   "source": "entity/cat",
+   "prefix": "entity/cat/"
+  }
+ ]
+}

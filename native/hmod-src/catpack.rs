@@ -84,10 +84,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The two test bags `/catpack give` hands out: black bundles worn in the chest slot.
-pub const GIVE: [&str; 2] = [
-    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_name="Cat backpack: kitten"]"#,
-    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_name="Cat backpack: cat"]"#,
+/// The test bags `/catpack give` hands out: black bundles worn in the chest slot, drawn as the bag
+/// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown cat, empty.
+pub const GIVE: [&str; 3] = [
+    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"#,
+    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"#,
+    r#"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"#,
 ];
 
 /// What `/catpack …` asks for.
@@ -108,7 +110,7 @@ pub fn command(args: &str) -> Command {
     };
     if first == "give" {
         let lines = GIVE.iter().map(|s| (*s).to_owned()).collect();
-        return Command::Send(lines, "Two test bags: put one in the chest slot".into());
+        return Command::Send(lines, "Three test bags: put one in the chest slot".into());
     }
     if let Some(kind) = Kind::parse(first) {
         let variant = words.next().filter(|v| VARIANTS.contains(v)).unwrap_or("red").to_owned();
