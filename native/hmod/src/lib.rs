@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mod_api::{ClientHost, Flow, Hooks, KeyRegistration, Registrar, RegistrationContext, SettingSpec};
 
+pub mod catpack;
+
 /// The mod's keys: id, the label Controls shows, the default key.
 pub const KEYS: [(&str, &str, &str); 2] = [
     ("web", "Web swing", "key.keyboard.r"),
@@ -67,11 +69,34 @@ impl Hooks for Mod {
     ) {
         event.commands.push(mod_api::Command::new("swingmode"));
         event.commands.push(mod_api::Command::new("swingmode <args:text>"));
+        event.commands.push(mod_api::Command::new("catpack"));
+        event.commands.push(mod_api::Command::new("catpack <cat:text>"));
+    }
+
+    /// The kitten's model is baked once, when the client has started.
+    fn client_setup(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientSetupEvent) {
+        catpack::bake(host);
+    }
+
+    /// The cat backpack draws over both player models.
+    fn register_entity_layers(
+        &self,
+        _context: &RegistrationContext,
+        event: &mut mod_api::RegisterEntityLayersEvent<'_>,
+    ) {
+        catpack::register_layers(event);
     }
 
     /// `/swingmode …` goes to the mod, not the server, in the player's own world only; elsewhere
     /// the server gets it as always.
-    fn command(&self, _host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
+    fn command(&self, host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
+        if let Some(args) = event.command.trim().strip_prefix("catpack")
+            && (args.is_empty() || args.starts_with(' '))
+        {
+            let line = catpack::command(args);
+            let _ = host.chat_line(mod_api::Text::literal(line));
+            return Flow::Cancel;
+        }
         if !is_command(event.command) || !OWN_WORLD.load(Ordering::Relaxed) {
             return Flow::Continue;
         }

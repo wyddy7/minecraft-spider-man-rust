@@ -7,7 +7,7 @@ in Controls, its chat command). This writes that project to native/hmod/ (genera
 
   horizon-mod.toml   the mod's identity, the pins, the rows (from horizon-mixin.toml, renamed to the new tables)
   Cargo.toml         the mod's crate, on the pinned SDK in .horizon/sdk/
-  src/lib.rs         the crate: native/hmod-src/lib.rs
+  src/*.rs, assets/  the crate and its textures: native/hmod-src/
   src/game/*.rs      the module and helpers, compiled inside the game's function copies, never part of the crate
   LICENSE
 
@@ -110,7 +110,10 @@ def main():
         rows.append(table("native.mixin", mixin))
     (OUT / "horizon-mod.toml").write_text("".join(rows).rstrip("\n") + "\n")
     (OUT / "Cargo.toml").write_text(CARGO.format(version=version))
-    shutil.copy(SRC / "lib.rs", OUT / "src" / "lib.rs")
+    for source in sorted(SRC.glob("*.rs")):
+        shutil.copy(source, OUT / "src" / source.name)
+    if (SRC / "assets").is_dir():
+        shutil.copytree(SRC / "assets", OUT / "assets")
     shutil.copy(NATIVE.parent / "LICENSE", OUT / "LICENSE")
     (OUT / ".gitignore").write_text("/target\n/.horizon\n")
     print(OUT)
