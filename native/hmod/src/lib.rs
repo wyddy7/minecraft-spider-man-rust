@@ -70,12 +70,17 @@ impl Hooks for Mod {
         event.commands.push(mod_api::Command::new("swingmode"));
         event.commands.push(mod_api::Command::new("swingmode <args:text>"));
         event.commands.push(mod_api::Command::new("catpack"));
-        event.commands.push(mod_api::Command::new("catpack <cat:text>"));
+        event.commands.push(mod_api::Command::new("catpack <args:text>"));
     }
 
     /// The kitten's model is baked once, when the client has started.
     fn client_setup(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientSetupEvent) {
         catpack::bake(host);
+    }
+
+    /// Which cat backpack the local player wears, from their chest slot.
+    fn client_tick_post(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientTickPostEvent) {
+        catpack::tick(host);
     }
 
     /// The cat backpack draws over both player models.
@@ -93,7 +98,15 @@ impl Hooks for Mod {
         if let Some(args) = event.command.trim().strip_prefix("catpack")
             && (args.is_empty() || args.starts_with(' '))
         {
-            let line = catpack::command(args);
+            let line = match catpack::command(args) {
+                catpack::Command::Say(line) => line,
+                catpack::Command::Send(lines, line) => {
+                    for l in lines {
+                        let _ = host.send_chat(&l);
+                    }
+                    line
+                }
+            };
             let _ = host.chat_line(mod_api::Text::literal(line));
             return Flow::Cancel;
         }
