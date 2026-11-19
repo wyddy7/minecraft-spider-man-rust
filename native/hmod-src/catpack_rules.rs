@@ -22,8 +22,11 @@
 //! merges its data, and a mob's UUID can't be merged; everything else (name, owner, variant,
 //! collar, age, health) is the cat's own.
 //!
-//! Not here yet: a slot of its own for the bag, a storage window, growing in chests and as a
-//! dropped item.
+//! Storage is the bundle's own: the bag is a bundle, so things go in and out of it in the
+//! inventory as with any bundle, and stay in it with the cat.
+//!
+//! Not here yet: growing in chests and as a dropped item; a cell for the back slot in the
+//! inventory window.
 
 use mod_api::{
     Compound, EntityInteractEvent, HostSide, InteractionResult, ItemStack, LivingRef, PlayerRef,
@@ -86,7 +89,7 @@ fn put(host: &mut dyn ServerHost, player: PlayerRef, place: Place, stack: ItemSt
     let living = LivingRef::new(player.entity());
     match place {
         Place::Hand(hand) => matches!(living.set_hand_item(host, hand, Some(stack)), Ok(true)),
-        Place::Worn => matches!(living.set_equipment(host, mod_api::EquipmentSlot::Chest, Some(stack)), Ok(true)),
+        Place::Worn => set_back(host, player, Some(stack)),
     }
 }
 
@@ -103,8 +106,7 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
         HostSide::Client(host) => {
             let worn = host.local_player().is_some_and(|player| {
                 let entity = player.entity();
-                entity.is_shift_key_down(host) == Some(true)
-                    && LivingRef::new(entity).equipment(host, mod_api::EquipmentSlot::Chest).is_some_and(|s| bag(&s).is_some())
+                entity.is_shift_key_down(host) == Some(true) && worn_on_backs().iter().any(|(id, _)| *id == entity.id())
             });
             return (in_hand.is_some() || worn).then_some(InteractionResult::Success);
         }
@@ -116,7 +118,7 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
             if player.entity().is_shift_key_down(host) != Some(true) {
                 return None;
             }
-            let worn = LivingRef::new(player.entity()).equipment(host, mod_api::EquipmentSlot::Chest)?;
+            let worn = back(host, player)?;
             bag(&worn)?;
             (Place::Worn, worn)
         }
@@ -219,24 +221,30 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
     Some(InteractionResult::SuccessServer)
 }
 
+/// `stack` a second later, if it is a bag whose kitten grew in that second.
+fn grown(stack: &ItemStack) -> Option<ItemStack> {
+    let Bag::Holding(mut custom) = bag(stack)? else { return None };
+    let Some(Tag::Compound(cat)) = custom.get_mut(&"catpack_data".into()) else { return None };
+    if matches!(cat.get(&"AgeLocked".into()), Some(Tag::Byte(n)) if *n != 0) {
+        return None;
+    }
+    let Some(Tag::Int(age)) = cat.get_mut(&"Age".into()) else { return None };
+    if *age >= 0 {
+        return None;
+    }
+    *age = (*age + 20).min(0);
+    let (kind, variant) = shown(cat);
+    custom.insert("catpack".into(), Tag::String(kind.into()));
+    rewritten(stack, custom, &format!("spider_man:catpack_{kind}_{variant}"))
+}
+
 /// Once a second for each player: the kittens in the bags they carry grow by that second.
 pub fn grow(host: &mut dyn ServerHost, player: PlayerRef) {
     let Some(slots) = player.inventory_slots(host) else { return };
     for (slot, stack) in slots {
-        let Some(Bag::Holding(mut custom)) = bag(&stack) else { continue };
-        let Some(Tag::Compound(cat)) = custom.get_mut(&"catpack_data".into()) else { continue };
-        if matches!(cat.get(&"AgeLocked".into()), Some(Tag::Byte(n)) if *n != 0) {
-            continue;
+        if let Some(next) = grown(&stack) {
+            let _ = player.set_inventory_slot(host, slot, Some(next));
         }
-        let Some(Tag::Int(age)) = cat.get_mut(&"Age".into()) else { continue };
-        if *age >= 0 {
-            continue;
-        }
-        *age = (*age + 20).min(0);
-        let (kind, variant) = shown(cat);
-        custom.insert("catpack".into(), Tag::String(kind.into()));
-        let Some(next) = rewritten(&stack, custom, &format!("spider_man:catpack_{kind}_{variant}")) else { continue };
-        let _ = player.set_inventory_slot(host, slot, Some(next));
     }
 }
 
@@ -244,6 +252,7 @@ pub fn grow(host: &mut dyn ServerHost, player: PlayerRef) {
 pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
     let HostSide::Server(host) = host else { return };
     let level = event.level;
+    backs_tick(host, level);
     let mut ticks = TICKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if ticks.len() > 64 {
         ticks.clear();
@@ -260,8 +269,162 @@ pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
     drop(ticks);
     for player in level.online_players(host).unwrap_or_default() {
         grow(host, player);
+        if let Some(stack) = back(host, player)
+            && let Some(next) = grown(&stack)
+        {
+            set_back(host, player, Some(next));
+        }
     }
 }
 
 /// Each level's ticks since its kittens last grew.
 static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex::new(Vec::new());
+
+// ---- The back slot ----
+//
+// A bag is worn on the back, in a slot of the mod's own: the chest slot stays free for a
+// chestplate or an elytra. The game has no such slot, so the mod keeps it: the stack lives in its
+// wearer's persistent data (`spider_man_back`), which the game saves with the player.
+//
+// - **On**: use a bag in the hand (not on a cat, not sneaking). A bag already on the back comes
+//   into the hand in its place.
+// - **Off**: sneak and use an empty hand on nothing. The bag goes into the inventory; with no
+//   room there it stays on the back.
+// - **Death**: the bag drops where its wearer died, with all that is in it, unless the world
+//   keeps inventories.
+//
+// Known gap: the slot is the world owner's process's own. A guest of a LAN world wears a bag and
+// the host sees it, but the guest's own game is not told (nothing is sent), and a dedicated
+// server would need the mod on it.
+
+/// Where a player's persistent data keeps the bag on their back.
+const BACK: &str = "spider_man_back";
+
+/// Each player's back, as last read or written: their UUID, their entity id, the bag.
+static BACKS: std::sync::Mutex<Vec<(u128, u32, Option<ItemStack>)>> = std::sync::Mutex::new(Vec::new());
+/// Players (by UUID) who asked to take their bag off, from their own client: handled on the
+/// server's next tick. Reaches the server only in the asker's own world.
+static TAKE_OFF: std::sync::Mutex<Vec<u128>> = std::sync::Mutex::new(Vec::new());
+
+fn backs() -> std::sync::MutexGuard<'static, Vec<(u128, u32, Option<ItemStack>)>> {
+    BACKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The bags on backs, by wearer's entity id, for the client of the same process to draw.
+pub fn worn_on_backs() -> Vec<(u32, ItemStack)> {
+    backs().iter().filter_map(|(_, id, stack)| Some((*id, stack.clone()?))).collect()
+}
+
+/// The bag on `player`'s back.
+fn back(host: &mut dyn ServerHost, player: PlayerRef) -> Option<ItemStack> {
+    let (uuid, id) = (player.uuid(), player.entity().id());
+    if let Some(known) = backs().iter_mut().find(|(u, ..)| *u == uuid) {
+        known.1 = id;
+        return known.2.clone();
+    }
+    let stack = match player.persistent_data(host).and_then(|data| data.get(&BACK.into()).cloned()) {
+        Some(Tag::Compound(saved)) => ItemStack::from_nbt(host, &saved),
+        _ => None,
+    };
+    backs().push((uuid, id, stack.clone()));
+    stack
+}
+
+/// Puts `stack` (or nothing) on `player`'s back: saved first, then shown.
+fn set_back(host: &mut dyn ServerHost, player: PlayerRef, stack: Option<ItemStack>) -> bool {
+    let mut data = player.persistent_data(host).unwrap_or_default();
+    match stack.as_ref().map(|s| s.to_nbt(host)) {
+        Some(Some(saved)) => {
+            data.insert(BACK.into(), Tag::Compound(saved));
+        }
+        Some(None) => return false,
+        None => {
+            data.remove(&BACK.into());
+        }
+    }
+    if player.set_persistent_data(host, data).is_err() {
+        return false;
+    }
+    let (uuid, id) = (player.uuid(), player.entity().id());
+    let mut all = backs();
+    match all.iter_mut().find(|(u, ..)| *u == uuid) {
+        Some(known) => *known = (uuid, id, stack),
+        None => all.push((uuid, id, stack)),
+    }
+    true
+}
+
+/// A player uses the item in their hand on nothing: a bag goes onto the back. Its use as the
+/// bundle it is made of (throwing out what it holds) is always stopped.
+pub fn right_click_item(host: HostSide, event: &mut mod_api::RightClickItemEvent<'_>) -> bool {
+    let click = event.click;
+    if bag(click.stack).is_none() {
+        return false;
+    }
+    let HostSide::Server(host) = host else { return true };
+    let Some(player) = host.players().server_players().into_iter().find(|p| p.uuid() == click.player) else { return true };
+    if player.entity().is_shift_key_down(host) == Some(true) {
+        return true;
+    }
+    // The back first, the hand after: a failure leaves the bag in both places at worst, never in
+    // neither.
+    let before = back(host, player);
+    if !set_back(host, player, Some(click.stack.clone())) {
+        say(host, player, "The backpack can't be put on right now");
+        return true;
+    }
+    if !matches!(LivingRef::new(player.entity()).set_hand_item(host, click.hand, before.clone()), Ok(true)) {
+        set_back(host, player, before);
+    }
+    true
+}
+
+/// The client's own player sneaks and uses an empty hand on nothing: they ask for their bag.
+pub fn right_click_empty(host: &dyn mod_api::ClientHost) {
+    let Some(player) = host.local_player() else { return };
+    if player.entity().is_shift_key_down(host) == Some(true) {
+        let mut asked = TAKE_OFF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if asked.len() < 64 {
+            asked.push(player.uuid());
+        }
+    }
+}
+
+/// Each server tick of a level: bags asked off come off, and every player's back is known.
+fn backs_tick(host: &mut dyn ServerHost, level: mod_api::LevelRef) {
+    let asked = std::mem::take(&mut *TAKE_OFF.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    for player in level.online_players(host).unwrap_or_default() {
+        let worn = back(host, player);
+        if !asked.contains(&player.uuid()) {
+            continue;
+        }
+        let Some(stack) = worn else { continue };
+        // Into the inventory first, off the back after.
+        if player.give_stack(host, stack.clone()).is_err() {
+            say(host, player, "No room to take the backpack off");
+            continue;
+        }
+        set_back(host, player, None);
+    }
+}
+
+/// A player dies: the bag on their back drops there, unless the world keeps inventories.
+pub fn living_death(host: &mut dyn ServerHost, event: &mut mod_api::LivingDeathEvent<'_>) {
+    if event.kind != "minecraft:player" {
+        return;
+    }
+    let Some(entity) = host.entity(event.entity) else { return };
+    let Some(player) = host.players().server_players().into_iter().find(|p| p.entity().id() == event.entity) else { return };
+    let Some(stack) = back(host, player) else { return };
+    let Some(level) = entity.level(host) else { return };
+    if matches!(level.game_rule(host, "minecraft:keep_inventory"), Ok(Some(mod_api::GameRuleValue::Bool(true))))
+        || matches!(level.game_rule(host, "keepInventory"), Ok(Some(mod_api::GameRuleValue::Bool(true))))
+    {
+        return;
+    }
+    let Some([x, y, z]) = entity.position(host) else { return };
+    // Dropped first, off the back after: a failure leaves the bag on the back for the respawn.
+    if matches!(level.spawn_item(host, x, y + 0.5, z, stack, 40), Ok(Some(_))) {
+        set_back(host, player, None);
+    }
+}

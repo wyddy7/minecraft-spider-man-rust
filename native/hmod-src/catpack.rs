@@ -93,9 +93,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// The test bags `/catpack give` hands out: black bundles worn in the chest slot, drawn as the bag
 /// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown cat, empty.
 pub const GIVE: [&str; 3] = [
-    r##"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"##,
-    r##"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"##,
-    r##"/give @s minecraft:black_bundle[minecraft:equippable={slot:"chest"},minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"empty"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"##,
+    r##"/give @s minecraft:black_bundle[minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"kitten",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_kitten_red",minecraft:item_name="Cat backpack: kitten"]"##,
+    r##"/give @s minecraft:black_bundle[minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"cat",catpack_cat:"red"},minecraft:item_model="spider_man:catpack_cat_red",minecraft:item_name="Cat backpack: cat"]"##,
+    r##"/give @s minecraft:black_bundle[minecraft:damage_resistant={types:"#minecraft:is_fire"},minecraft:custom_data={catpack:"empty"},minecraft:item_model="spider_man:catpack",minecraft:item_name="Cat backpack"]"##,
 ];
 
 /// What `/catpack …` asks for.
@@ -116,7 +116,7 @@ pub fn command(args: &str) -> Command {
     };
     if first == "give" {
         let lines = GIVE.iter().map(|s| (*s).to_owned()).collect();
-        return Command::Send(lines, "Three test bags: put one in the chest slot".into());
+        return Command::Send(lines, "Three test bags: use one to put it on your back".into());
     }
     if let Some(kind) = Kind::parse(first) {
         let variant = words.next().filter(|v| VARIANTS.contains(v)).unwrap_or("red").to_owned();
@@ -270,6 +270,13 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
         }
         let living = mod_api::LivingRef::new(entity);
         if let Some(bag) = living.equipment(host, mod_api::EquipmentSlot::Chest).and_then(|stack| worn_by(&stack)) {
+            worn.push((id, bag));
+        }
+    }
+    // The bags on backs, which the rules keep (in this process: the world owner's own world).
+    for (id, stack) in crate::catpack_rules::worn_on_backs() {
+        if let Some(bag) = worn_by(&stack) {
+            worn.retain(|(other, _)| *other != id);
             worn.push((id, bag));
         }
     }

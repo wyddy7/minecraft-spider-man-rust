@@ -153,6 +153,23 @@ impl Hooks for Mod {
         catpack_rules::level_tick(host, event);
     }
 
+    fn right_click_item(&self, host: mod_api::HostSide, event: &mut mod_api::RightClickItemEvent<'_>) -> Flow {
+        if catpack_rules::right_click_item(host, event) {
+            *event.cancellation_result = mod_api::InteractionResult::Consume;
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
+    fn right_click_empty(&self, host: &mut dyn ClientHost, _event: &mut mod_api::RightClickEmptyEvent) {
+        catpack_rules::right_click_empty(host);
+    }
+
+    fn living_death(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::LivingDeathEvent<'_>) -> Flow {
+        catpack_rules::living_death(host, event);
+        Flow::Continue
+    }
+
     fn living_fall(&self, _cx: &dyn mod_api::LoopContext, event: &mut mod_api::LivingFallEvent<'_>) -> Flow {
         if fall_gate::forget(event.entity) {
             event.distance = 0.0;
