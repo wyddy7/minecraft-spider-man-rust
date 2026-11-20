@@ -155,14 +155,6 @@ impl Hooks for Mod {
         catpack_rules::entity_interact(host, event)
     }
 
-    fn use_item_on_block(&self, host: mod_api::HostSide, event: &mut mod_api::UseItemOnBlockEvent<'_>) -> Flow {
-        if let Some(result) = catpack_rules::use_item_on_block(host, event) {
-            *event.cancellation_result = result;
-            event.cancelled = true;
-        }
-        Flow::Continue
-    }
-
     fn level_tick_post(&self, host: mod_api::HostSide, event: &mut mod_api::LevelTickPostEvent) {
         catpack_rules::level_tick(host, event);
     }

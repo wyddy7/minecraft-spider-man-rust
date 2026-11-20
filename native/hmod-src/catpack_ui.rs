@@ -25,6 +25,9 @@ static BACKS: Mutex<Vec<(u32, String, String, Instant)>> = Mutex::new(Vec::new()
 static WINDOW: Mutex<Option<(Vec<(usize, ItemStack)>, Vec<(usize, ItemStack)>)>> = Mutex::new(None);
 /// The bag on this player's own back, whole, for the inventory's back slot.
 static MINE: Mutex<Option<ItemStack>> = Mutex::new(None);
+/// The open window is the worn bag's (it has "Take off"); it is a bag in the hand with a cat in
+/// it (it has "Let out").
+static WINDOW_OF: Mutex<(bool, bool)> = Mutex::new((false, false));
 /// The key that opens the worn bag, as Controls lists it.
 pub const KEY: &str = "catpack";
 /// The player clicked the back slot; the next tick sees to it.
@@ -95,6 +98,8 @@ pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
                 host.mod_screen_close(MOD);
                 return;
             }
+            let flag = |key: &str| matches!(told.get(&key.into()), Some(Tag::Byte(1)));
+            *lock(&WINDOW_OF) = (flag("back"), flag("cat"));
             let window = (stacks(host, &told, "items"), stacks(host, &told, "inv"));
             let first = lock(&WINDOW).replace(window).is_none();
             if first && !host.mod_screen_open(MOD) {
@@ -214,12 +219,12 @@ pub fn draw(host: &dyn ClientHost, draw: &mut dyn DrawContext, mouse: [f32; 2]) 
     draw.fill([ox + WIDTH - 2.0, oy, 2.0, HEIGHT], 0xFF55_5555);
     draw.text("Back catpack", [ox + 8.0, oy + 6.0], 0xFF40_4040, false);
     draw.text("Inventory", [ox + 8.0, oy + 75.0], 0xFF40_4040, false);
-    if lock(&MINE).is_some() {
+    if let Some((label, _)) = window_button() {
         let [bx, by, bw, bh] = take_off_button(size);
         let over_button = mouse[0] >= bx && mouse[0] < bx + bw && mouse[1] >= by && mouse[1] < by + bh;
         draw.fill([bx, by, bw, bh], 0xFF37_3737);
         draw.fill([bx + 1.0, by + 1.0, bw - 2.0, bh - 2.0], if over_button { 0xFFA0_A0A0 } else { 0xFF8B_8B8B });
-        draw.text("Take off", [bx + (bw - draw.text_width("Take off")) / 2.0, by + 2.0], 0xFFFF_FFFF, true);
+        draw.text(label, [bx + (bw - draw.text_width(label)) / 2.0, by + 2.0], 0xFFFF_FFFF, true);
     }
     let over = hovered(size, mouse);
     for (cell, [x, y]) in cells() {
@@ -257,8 +262,13 @@ pub fn click(host: &dyn ClientHost, mouse: [f32; 2], button: i32) -> bool {
     }
     let size = *lock(&SIZE);
     let [bx, by, bw, bh] = take_off_button(size);
-    if lock(&MINE).is_some() && mouse[0] >= bx && mouse[0] < bx + bw && mouse[1] >= by && mouse[1] < by + bh {
-        lock(&ASKS).push(message("off", []));
+    if let Some((_, ask)) = window_button()
+        && mouse[0] >= bx
+        && mouse[0] < bx + bw
+        && mouse[1] >= by
+        && mouse[1] < by + bh
+    {
+        lock(&ASKS).push(message(ask, []));
         return true;
     }
     match hovered(size, mouse) {
@@ -293,7 +303,17 @@ pub fn key_on_window(host: &dyn ClientHost, key: &str) -> bool {
 /// The window is to be closed with the next tick (a key hook can't close it itself).
 static CLOSE: Mutex<bool> = Mutex::new(false);
 
-/// The window's "Take off" button, shown while a bag is on the back: `[x, y, w, h]`.
+/// The open window's one button, with what it asks of the server: "Take off" on the worn bag's
+/// window, "Let out" on the window of a bag in the hand that holds a cat, none otherwise.
+fn window_button() -> Option<(&'static str, &'static str)> {
+    match *lock(&WINDOW_OF) {
+        (true, _) => Some(("Take off", "off")),
+        (false, true) => Some(("Let out", "out")),
+        (false, false) => None,
+    }
+}
+
+/// The window's button: `[x, y, w, h]`.
 fn take_off_button(size: [f32; 2]) -> [f32; 4] {
     let [ox, oy] = origin(size);
     [ox + WIDTH - 62.0, oy + 4.0, 54.0, 12.0]
