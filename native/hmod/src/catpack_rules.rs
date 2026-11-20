@@ -478,6 +478,27 @@ fn wear_from(host: &mut dyn ServerHost, player: PlayerRef, slot: u32) {
     }
 }
 
+/// The back and `player`'s hotbar slot `slot` change places, as a number key over the off hand's
+/// slot does: a bag there is worn and the worn one lands there; an empty slot takes the worn bag.
+fn swap_with(host: &mut dyn ServerHost, player: PlayerRef, slot: u32) {
+    if slot >= 9 {
+        return;
+    }
+    let there = player.inventory_slots(host).unwrap_or_default().into_iter().find(|(s, _)| *s == slot).map(|(_, stack)| stack);
+    let worn = back(host, player);
+    if there.as_ref().is_some_and(|stack| stack.count() != 1 || bag(stack).is_none()) || (there.is_none() && worn.is_none()) {
+        return;
+    }
+    close(host, player);
+    // The back first, the slot after.
+    if !set_back(host, player, there.clone()) {
+        return;
+    }
+    if player.set_inventory_slot(host, slot, worn.clone()).is_err() {
+        set_back(host, player, worn);
+    }
+}
+
 /// Whether the stack is a cat backpack.
 pub fn is_bag(stack: &ItemStack) -> bool {
     bag(stack).is_some()
@@ -893,6 +914,7 @@ pub fn asked(message: Compound, context: &mut dyn mod_api::IPayloadContext) {
         ("slot", _) => slot_click(host, player),
         ("noslot", _) => slot_clicks().retain(|(uuid, _)| *uuid != player.uuid()),
         ("wear", Some(slot)) => wear_from(host, player, slot),
+        ("swap", Some(slot)) => swap_with(host, player, slot),
         ("thrown", _) => thrown_on_slot(host, player),
         ("open", _) => open(host, player, Source::Back),
         ("close", _) => close(host, player),

@@ -264,6 +264,17 @@ pub fn click(host: &dyn ClientHost, mouse: [f32; 2], button: i32) -> bool {
     true
 }
 
+/// A hotbar key pressed with the mouse over the back slot swaps the back with that hotbar slot,
+/// as over the off hand's slot. True when the key was the slot's.
+pub fn key_on_slot(screen: &mod_api::ScreenView<'_>, key: &str) -> bool {
+    if !over_slot(screen) {
+        return false;
+    }
+    let Some(n) = key.strip_prefix("key.keyboard.").and_then(|n| n.parse::<i32>().ok()).filter(|n| (1..=9).contains(n)) else { return false };
+    lock(&ASKS).push(message("swap", [("s", Tag::Int(n - 1))]));
+    true
+}
+
 /// The bag's own key, pressed while its window is open, closes the window, as it opened it.
 /// True when the key was the window's.
 pub fn key_on_window(host: &dyn ClientHost, key: &str) -> bool {

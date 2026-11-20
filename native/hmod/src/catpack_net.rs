@@ -14,6 +14,7 @@
 //!   - `slot`: I clicked my back slot, and the pickup click I send next is that slot's (the bags
 //!     on my cursor and my back change places); `noslot`: that click was not sent after all;
 //!   - `wear` (inventory slot `s`): put that bag on my back, the worn one into its place;
+//!   - `swap` (hotbar slot `s`): my back and that slot change places (a number key over the slot);
 //!   - `thrown`: the bag I just threw, I threw onto my back slot (a creative inventory lets a
 //!     stack off its cursor no other way): wear that one;
 //!   - `put` (inventory slot `s`) and `take` (bag slot `s`): move a stack in the open window;

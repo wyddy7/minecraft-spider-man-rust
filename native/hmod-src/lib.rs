@@ -183,7 +183,7 @@ impl Hooks for Mod {
     }
 
     fn screen_key_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenKeyPressedPreEvent<'_>) -> Flow {
-        if !event.repeat && catpack_ui::key_on_window(host, event.key) { Flow::Cancel } else { Flow::Continue }
+        if !event.repeat && (catpack_ui::key_on_window(host, event.key) || catpack_ui::key_on_slot(event.screen, event.key)) { Flow::Cancel } else { Flow::Continue }
     }
 
     fn item_stacked_on_other(&self, context: &dyn mod_api::LoopContext, event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) -> Flow {
