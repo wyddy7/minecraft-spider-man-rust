@@ -27,11 +27,11 @@ static WINDOW: Mutex<Option<(Vec<(usize, ItemStack)>, Vec<(usize, ItemStack)>)>>
 static MINE: Mutex<Option<ItemStack>> = Mutex::new(None);
 /// The key that opens the worn bag, as Controls lists it.
 pub const KEY: &str = "catpack";
-/// Inventory slots the server said to pick up onto the cursor, each with the ticks left to wait
-/// (the slot's new stack arrives beside the message, not before it).
-static PICKS: Mutex<Vec<(u32, u8)>> = Mutex::new(Vec::new());
-/// The player clicked the back slot with a stack on the cursor; the next tick sees to it.
-static CURSOR_TO_BACK: Mutex<bool> = Mutex::new(false);
+/// The player clicked the back slot; the next tick sees to it.
+static SLOT_CLICK: Mutex<bool> = Mutex::new(false);
+/// The click being made is the back slot's: this game's own answer to it swaps the cursor with
+/// the back, as the server's will.
+static PREDICT: Mutex<bool> = Mutex::new(false);
 /// What the player asked since the last tick, sent with the next one.
 static ASKS: Mutex<Vec<Compound>> = Mutex::new(Vec::new());
 
@@ -88,13 +88,6 @@ pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
                 all.push((entity, kind, text(&told, "variant").unwrap_or_else(|| "red".into()), Instant::now()));
             }
         }
-        "pick" => {
-            if let Some(Tag::Int(slot)) = told.get(&"s".into())
-                && let Ok(slot) = u32::try_from(*slot)
-            {
-                lock(&PICKS).push((slot, 2));
-            }
-        }
         "window" => {
             let Ok(host) = context.client_host() else { return };
             if matches!(told.get(&"open".into()), Some(Tag::Byte(0))) {
@@ -127,37 +120,30 @@ pub fn tick(host: &mut dyn ClientHost) {
             lock(&ASKS).push(message("open", []));
         }
     }
-    // A bag taken off through the back slot is picked up from where the server put it.
-    let due: Vec<u32> = {
-        let mut picks = lock(&PICKS);
-        picks.iter_mut().for_each(|(_, wait)| *wait = wait.saturating_sub(1));
-        let due = picks.iter().filter(|(_, wait)| *wait == 0).map(|(slot, _)| *slot).collect();
-        picks.retain(|(_, wait)| *wait > 0);
-        due
-    };
-    for slot in due {
-        let Some(menu) = host.local_player().and_then(|player| player.container_menu(&*host)) else { continue };
-        let Some(index) = menu.slot_kinds(&*host).and_then(|kinds| kinds.iter().position(|kind| *kind == mod_api::MenuSlotKind::Player(slot))) else { continue };
-        menu.click(host, &[mod_api::MenuClick::Pickup { slot: Some(index), button: mod_api::MouseButton::Left }]);
+    if !crate::catpack::learnt() {
+        if let Some(stack) = lock(&MINE).as_ref() {
+            crate::catpack::learn(&*host, stack);
+        }
+        if let Some(stack) = host.local_player().and_then(|player| player.container_menu(&*host)).and_then(|menu| menu.carried(&*host)).flatten() {
+            crate::catpack::learn(&*host, &stack);
+        }
     }
-    // A bag on the cursor, clicked onto the back slot: it is put down in a free inventory slot,
-    // as a click of the player's would, and the server is asked to wear it from there and to
-    // send the bag that was worn back to the cursor.
-    if std::mem::take(&mut *lock(&CURSOR_TO_BACK))
+    // What was asked so far goes first: a click on the back slot must reach the server after them.
+    for ask in std::mem::take(&mut *lock(&ASKS)) {
+        crate::catpack_net::ask(host, ask);
+    }
+    if std::mem::take(&mut *lock(&SLOT_CLICK))
         && let Some(menu) = host.local_player().and_then(|player| player.container_menu(&*host))
-        && menu.carried(&*host).flatten().is_some_and(|stack| stack.count() == 1 && stack.item().id(&*host) == crate::catpack::ITEM)
-        && let Some(kinds) = menu.slot_kinds(&*host)
+        && let Some(index) = menu.slot_kinds(&*host).and_then(|kinds| kinds.iter().position(|kind| matches!(kind, mod_api::MenuSlotKind::Player(_))))
     {
-        let free = |range: std::ops::Range<u32>| {
-            kinds.iter().enumerate().find_map(|(index, kind)| match kind {
-                mod_api::MenuSlotKind::Player(slot) if range.contains(slot) && menu.slot(&*host, index) == Some(None) => Some((index, *slot)),
-                _ => None,
-            })
-        };
-        if let Some((index, slot)) = free(9..36).or_else(|| free(0..9))
-            && menu.click(host, &[mod_api::MenuClick::Pickup { slot: Some(index), button: mod_api::MouseButton::Left }])
-        {
-            lock(&ASKS).push(message("wear", [("s", Tag::Int(slot as i32)), ("c", Tag::Byte(1))]));
+        // The swap is a click of the game's own, on any slot of the player's: the server is
+        // told the next click is the back slot's, and both sides then answer that click
+        // (`stacked_on_other`) by swapping the cursor with the back instead of the slot.
+        crate::catpack_net::ask(host, message("slot", []));
+        *lock(&PREDICT) = true;
+        let sent = menu.click(host, &[mod_api::MenuClick::Pickup { slot: Some(index), button: mod_api::MouseButton::Left }]);
+        if std::mem::take(&mut *lock(&PREDICT)) || !sent {
+            crate::catpack_net::ask(host, message("noslot", []));
         }
     }
     for ask in std::mem::take(&mut *lock(&ASKS)) {
@@ -305,6 +291,28 @@ pub fn draw_slot(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
     }
 }
 
+/// This game's own answer to a pickup click (`item_stacked_on_other` on the client): the click
+/// made for the back slot swaps the cursor with the worn bag, as the server answers it.
+pub fn stacked_on_other(event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) {
+    if !std::mem::take(&mut *lock(&PREDICT)) {
+        return;
+    }
+    event.cancelled = true;
+    event.event.cancellation_result = true;
+    let held = event.event.carried.get().cloned();
+    if held.as_ref().is_some_and(|held| held.count() != 1 || !crate::catpack_rules::is_bag(held)) {
+        return;
+    }
+    let worn = std::mem::replace(&mut *lock(&MINE), held);
+    event.event.carried.set(worn);
+}
+
+/// Whether letting go of a mouse button here is the back slot's to swallow: over the slot, but
+/// not on the creative screen, where the throw is the point.
+pub fn swallows_release(screen: &mod_api::ScreenView<'_>) -> bool {
+    screen.id != "creative" && over_slot(screen)
+}
+
 /// Whether the mouse is over the back slot.
 pub fn over_slot(screen: &mod_api::ScreenView<'_>) -> bool {
     back_slot(screen).is_some_and(|[x, y]| over([x - 3.0, y - 3.0, CELL + 6.0, CELL + 6.0], screen.mouse))
@@ -324,11 +332,29 @@ pub fn click_slot(host: &dyn ClientHost, screen: &mod_api::ScreenView<'_>, butto
     }
     let shift = host.modifiers().shift();
     if over_slot(screen) {
-        let carries = host.local_player().and_then(|player| player.container_menu(host)).and_then(|menu| menu.carried(host)).flatten().is_some();
-        match (carries, shift) {
-            (true, _) => *lock(&CURSOR_TO_BACK) = true,
-            (false, true) => lock(&ASKS).push(message("off", [])),
-            (false, false) => lock(&ASKS).push(message("slot", [])),
+        let carried = host.local_player().and_then(|player| player.container_menu(host)).and_then(|menu| menu.carried(host)).flatten();
+        if screen.id == "creative" {
+            // A creative inventory keeps its cursor to itself and takes no click made for it.
+            // The slot lies outside its panel, where a click throws what the cursor holds: a bag
+            // is let go that way, and the server wears the bag thrown instead of dropping it.
+            // With nothing on the cursor the worn bag goes into the inventory.
+            return match carried {
+                Some(stack) => {
+                    if stack.count() == 1 && crate::catpack_rules::is_bag(&stack) {
+                        lock(&ASKS).push(message("thrown", []));
+                    }
+                    false
+                }
+                None => {
+                    lock(&ASKS).push(message("off", []));
+                    true
+                }
+            };
+        }
+        if shift && carried.is_none() {
+            lock(&ASKS).push(message("off", []));
+        } else {
+            *lock(&SLOT_CLICK) = true;
         }
         return true;
     }

@@ -275,6 +275,7 @@ pub fn grow(host: &mut dyn ServerHost, player: PlayerRef) {
 pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
     let HostSide::Server(host) = host else { return };
     let level = event.level;
+    save_backs(host, level);
     if !crate::catpack::learnt() {
         for player in level.online_players(host).unwrap_or_default() {
             for (_, stack) in player.inventory_slots(host).unwrap_or_default() {
@@ -326,7 +327,7 @@ static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex:
 // - **On**: sneak and use a bag in the hand (anywhere but on the top of a block when the bag
 //   holds a cat: that lets the cat out). A bag already on the back comes into the hand.
 // - **The slot**, beside the inventory: a click swaps the bag on the cursor with the worn one
-//   (either may be none); shift-click on a bag in the inventory wears it, the worn one taking its
+//   (either may be none), inside a pickup click of the game's own (`stacked_on_other`); shift-click on a bag in the inventory wears it, the worn one taking its
 //   place; shift-click on the slot, or the window's Take off, puts the worn bag into the
 //   inventory, where with no room it stays on the back.
 // - **Death**: the bag drops where its wearer died, with all that is in it, unless the world
@@ -457,8 +458,8 @@ fn take_off(host: &mut dyn ServerHost, player: PlayerRef) {
 }
 
 /// The bag in `player`'s inventory slot `slot` goes onto their back; the one worn, if any, into
-/// that slot, and with `pick` the player's own game is told to pick that one up onto the cursor.
-fn wear_from(host: &mut dyn ServerHost, player: PlayerRef, slot: u32, pick: bool) {
+/// that slot.
+fn wear_from(host: &mut dyn ServerHost, player: PlayerRef, slot: u32) {
     if slot >= 36 {
         return;
     }
@@ -474,34 +475,122 @@ fn wear_from(host: &mut dyn ServerHost, player: PlayerRef, slot: u32, pick: bool
     }
     if player.set_inventory_slot(host, slot, before.clone()).is_err() {
         set_back(host, player, before);
-    } else if pick && before.is_some() {
-        crate::catpack_net::tell(host, player, crate::catpack_net::message("pick", [("s", Tag::Int(slot as i32))]));
     }
 }
 
-/// A click on the back slot of `player`'s inventory with nothing on the cursor: the worn bag
-/// comes off onto the cursor. The game gives a mod no way to put a stack on the cursor of the
-/// player's own inventory, so the bag goes into a free inventory slot and the player's own game
-/// is told to pick it up from there (`pick`), as a click of theirs would; where it can't (a
-/// creative inventory moves its stacks itself), the bag stays in that slot.
+/// Whether the stack is a cat backpack.
+pub fn is_bag(stack: &ItemStack) -> bool {
+    bag(stack).is_some()
+}
+
+/// Players who clicked their back slot, and when: each one's next pickup click is that slot's.
+static SLOT_CLICKS: std::sync::Mutex<Vec<(u128, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+/// Players whose back changed inside a click, where nothing can be saved: the next tick saves it.
+static UNSAVED: std::sync::Mutex<Vec<u128>> = std::sync::Mutex::new(Vec::new());
+
+fn slot_clicks() -> std::sync::MutexGuard<'static, Vec<(u128, std::time::Instant)>> {
+    SLOT_CLICKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `player` clicked the back slot of their inventory: the pickup click their game sends next is
+/// answered by `stacked_on_other`. The cursor is the game's to move, and it moves it inside a
+/// click, so the swap is done there, as the game picks a stack up.
 fn slot_click(host: &mut dyn ServerHost, player: PlayerRef) {
-    let Some(worn) = back(host, player) else { return };
-    // The main inventory before the hotbar, so the bag doesn't flash in the hand.
-    let taken: Vec<u32> = player.inventory_slots(host).unwrap_or_default().into_iter().map(|(slot, _)| slot).collect();
-    let Some(free) = (9..36).chain(0..9).find(|slot| !taken.contains(slot)) else {
-        say(host, player, "No room to take the backpack off");
-        return;
-    };
+    // The back is read here, where there is a host to read it with.
+    back(host, player);
     close(host, player);
-    // Into the inventory first, off the back after.
-    if player.set_inventory_slot(host, free, Some(worn)).is_err() {
+    let mut clicks = slot_clicks();
+    clicks.retain(|(uuid, at)| *uuid != player.uuid() && at.elapsed().as_secs() < 2);
+    clicks.push((player.uuid(), std::time::Instant::now()));
+}
+
+/// The server's answer to a pickup click (`item_stacked_on_other`): the click a player's game
+/// made for their back slot swaps the bag on the cursor with the bag on the back, either of
+/// which may be none, and does nothing to the slot it names. The back is saved with the next tick.
+pub fn stacked_on_other(event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) {
+    let Some(uuid) = event.event.player else { return };
+    {
+        let mut clicks = slot_clicks();
+        let Some(i) = clicks.iter().position(|(u, _)| *u == uuid) else { return };
+        if clicks.remove(i).1.elapsed().as_secs() >= 2 {
+            return;
+        }
+    }
+    event.cancelled = true;
+    event.event.cancellation_result = true;
+    let held = event.event.carried.get().cloned();
+    if held.as_ref().is_some_and(|held| held.count() != 1 || bag(held).is_none()) {
         return;
     }
-    if !set_back(host, player, None) {
-        let _ = player.set_inventory_slot(host, free, None);
+    let mut all = backs();
+    let Some(known) = all.iter_mut().find(|(u, _)| *u == uuid) else { return };
+    let worn = std::mem::replace(&mut known.1, held);
+    event.event.carried.set(worn);
+    drop(all);
+    UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(uuid);
+}
+
+/// Saves and tells the backs that changed inside a click, for the players in `level`.
+fn save_backs(host: &mut dyn ServerHost, level: mod_api::LevelRef) {
+    let unsaved = std::mem::take(&mut *UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    if unsaved.is_empty() {
         return;
     }
-    crate::catpack_net::tell(host, player, crate::catpack_net::message("pick", [("s", Tag::Int(free as i32))]));
+    let players = level.online_players(host).unwrap_or_default();
+    for uuid in unsaved {
+        let saved = players.iter().find(|player| player.uuid() == uuid).is_some_and(|player| {
+            let worn = backs().iter().find(|(u, _)| *u == uuid).and_then(|(_, stack)| stack.clone());
+            set_back(host, *player, worn)
+        });
+        if !saved {
+            UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(uuid);
+        }
+    }
+}
+
+/// Bags just thrown: by whom, the item entity, and when.
+static THROWN: std::sync::Mutex<Vec<(u128, mod_api::ItemEntityRef, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+
+fn thrown() -> std::sync::MutexGuard<'static, Vec<(u128, mod_api::ItemEntityRef, std::time::Instant)>> {
+    THROWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A player throws an item: a bag is remembered for a moment, in case the throw was a click on
+/// the back slot of a creative inventory (`thrown_on_slot`).
+pub fn item_toss(host: &mut dyn ServerHost, event: &mut mod_api::ItemTossEvent) {
+    let mut all = thrown();
+    all.retain(|(.., at)| at.elapsed().as_secs() < 2);
+    if event.item.stack(host).is_some_and(|stack| stack.count() == 1 && bag(&stack).is_some()) {
+        all.push((event.player, event.item, std::time::Instant::now()));
+    }
+}
+
+/// `player` says the bag they just threw was thrown onto their back slot (a creative inventory
+/// lets a stack off its cursor no other way): the thrown bag is worn and its item entity is
+/// gone; the bag that was worn goes into their inventory.
+fn thrown_on_slot(host: &mut dyn ServerHost, player: PlayerRef) {
+    let found = {
+        let mut all = thrown();
+        all.iter().rposition(|(uuid, _, at)| *uuid == player.uuid() && at.elapsed().as_secs() < 2).map(|i| all.remove(i).1)
+    };
+    let Some(item) = found else { return };
+    let Some(stack) = item.stack(host) else { return };
+    if stack.count() != 1 || bag(&stack).is_none() {
+        return;
+    }
+    close(host, player);
+    // Onto the back first, out of the world after: a failure leaves the bag lying there.
+    let before = back(host, player);
+    if !set_back(host, player, Some(stack)) {
+        return;
+    }
+    if !item.entity().discard(host) {
+        set_back(host, player, before);
+        return;
+    }
+    if let Some(before) = before {
+        let _ = player.give_stack(host, before);
+    }
 }
 
 /// Each server tick of a level: every couple of seconds everyone is told every back again (a
@@ -772,7 +861,9 @@ pub fn asked(message: Compound, context: &mut dyn mod_api::IPayloadContext) {
     match (crate::catpack_net::kind(&message).as_str(), slot) {
         ("off", _) => take_off(host, player),
         ("slot", _) => slot_click(host, player),
-        ("wear", Some(slot)) => wear_from(host, player, slot, matches!(message.get(&"c".into()), Some(Tag::Byte(1)))),
+        ("noslot", _) => slot_clicks().retain(|(uuid, _)| *uuid != player.uuid()),
+        ("wear", Some(slot)) => wear_from(host, player, slot),
+        ("thrown", _) => thrown_on_slot(host, player),
         ("open", _) => open(host, player, Source::Back),
         ("close", _) => close(host, player),
         ("put", Some(slot)) => {

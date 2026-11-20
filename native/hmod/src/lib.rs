@@ -178,10 +178,24 @@ impl Hooks for Mod {
         catpack_ui::draw_slot(event.draw, event.screen);
     }
 
+    fn item_toss(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::ItemTossEvent) -> Flow {
+        catpack_rules::item_toss(host, event);
+        Flow::Continue
+    }
+
+    fn item_stacked_on_other(&self, context: &dyn mod_api::LoopContext, event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) -> Flow {
+        match context.side() {
+            mod_api::LoopSide::Server => catpack_rules::stacked_on_other(event),
+            mod_api::LoopSide::Client => catpack_ui::stacked_on_other(event),
+            _ => {}
+        }
+        Flow::Continue
+    }
+
     fn screen_mouse_button_released_pre(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonReleasedPreEvent<'_>) -> Flow {
         // The back slot lies outside the inventory's panel, where letting go of a button throws
         // what the cursor holds.
-        if catpack_ui::over_slot(event.screen) {
+        if catpack_ui::swallows_release(event.screen) {
             event.cancelled = true;
         }
         Flow::Continue
