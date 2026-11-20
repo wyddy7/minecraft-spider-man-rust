@@ -242,18 +242,21 @@ fn release(host: &mut dyn ServerHost, player: PlayerRef, stack: &ItemStack, mut 
     for gone in ["Pos", "Motion", "Rotation"] {
         cat.remove(&gone.into());
     }
-    // As a command summons it, the cat keeps its own UUID; the mod API's own spawn gives a new
-    // one, so that is the second way, for where the command is refused.
+    // A stand-in cat comes first, by the mod API's own spawn, which gives a new UUID. It then
+    // summons the real one as a command does, with the cat's own data and so its own UUID, and
+    // leaves: a command run by a mob tells no one, where one run by the player would write
+    // "Summoned new Cat" into their chat. Where the command is refused, the stand-in takes the
+    // cat's data and stays, the same cat in all but its UUID.
+    let Some(stand_in) = level.spawn_mob(host, "minecraft:cat", place, SpawnReason::Bucket) else { return Err("The cat can't come out here") };
     let mut line = format!("summon minecraft:cat {:.3} {:.3} {:.3} ", place[0], place[1], place[2]);
     snbt(&Tag::Compound(cat.clone()), &mut line);
-    let summoned = player.entity().run_command_with_output(host, &line, mod_api::PermissionLevel::Gamemasters).success
+    let summoned = stand_in.run_command_with_output(host, &line, mod_api::PermissionLevel::Gamemasters).success
         && uuid.is_some_and(|uuid| host.entity_by_uuid(uuid).is_some());
-    if !summoned {
-        let Some(spawned) = level.spawn_mob(host, "minecraft:cat", place, SpawnReason::Bucket) else { return Err("The cat can't come out here") };
-        if !spawned.merge_nbt(host, cat) {
-            spawned.discard(host);
-            return Err("The cat can't come out here");
-        }
+    if summoned {
+        stand_in.discard(host);
+    } else if !stand_in.merge_nbt(host, cat) {
+        stand_in.discard(host);
+        return Err("The cat can't come out here");
     }
     custom.remove(&"catpack_data".into());
     custom.remove(&"catpack_cat".into());
