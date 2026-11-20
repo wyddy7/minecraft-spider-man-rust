@@ -114,6 +114,9 @@ pub fn tick(host: &mut dyn ClientHost) {
         *lock(&WINDOW) = None;
         lock(&ASKS).push(message("close", []));
     }
+    if std::mem::take(&mut *lock(&CLOSE)) && host.mod_screen() == Some(MOD) {
+        host.mod_screen_close(MOD);
+    }
     // The bag's key opens the bag on the back.
     while host.consume_click(MOD, KEY) {
         if lock(&MINE).is_some() {
@@ -260,6 +263,19 @@ pub fn click(host: &dyn ClientHost, mouse: [f32; 2], button: i32) -> bool {
     }
     true
 }
+
+/// The bag's own key, pressed while its window is open, closes the window, as it opened it.
+/// True when the key was the window's.
+pub fn key_on_window(host: &dyn ClientHost, key: &str) -> bool {
+    if host.mod_screen() != Some(MOD) || lock(&WINDOW).is_none() || host.mod_key(MOD, KEY).is_none_or(|(bound, _)| bound != key) {
+        return false;
+    }
+    *lock(&CLOSE) = true;
+    true
+}
+
+/// The window is to be closed with the next tick (a key hook can't close it itself).
+static CLOSE: Mutex<bool> = Mutex::new(false);
 
 /// The window's "Take off" button, shown while a bag is on the back: `[x, y, w, h]`.
 fn take_off_button(size: [f32; 2]) -> [f32; 4] {

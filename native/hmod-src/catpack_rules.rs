@@ -555,41 +555,71 @@ fn thrown() -> std::sync::MutexGuard<'static, Vec<(u128, mod_api::ItemEntityRef,
     THROWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A player throws an item: a bag is remembered for a moment, in case the throw was a click on
-/// the back slot of a creative inventory (`thrown_on_slot`).
-pub fn item_toss(host: &mut dyn ServerHost, event: &mut mod_api::ItemTossEvent) {
-    let mut all = thrown();
-    all.retain(|(.., at)| at.elapsed().as_secs() < 2);
-    if event.item.stack(host).is_some_and(|stack| stack.count() == 1 && bag(&stack).is_some()) {
-        all.push((event.player, event.item, std::time::Instant::now()));
-    }
+/// Players who said their next throw of a bag is onto their back slot, and when.
+static THROWS_AWAITED: std::sync::Mutex<Vec<(u128, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+
+fn throws_awaited() -> std::sync::MutexGuard<'static, Vec<(u128, std::time::Instant)>> {
+    THROWS_AWAITED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `player` says the bag they just threw was thrown onto their back slot (a creative inventory
-/// lets a stack off its cursor no other way): the thrown bag is worn and its item entity is
-/// gone; the bag that was worn goes into their inventory.
+/// The bag `stack` goes onto `player`'s back and the bag that was worn into their inventory.
+fn wear_thrown(host: &mut dyn ServerHost, player: PlayerRef, stack: ItemStack) -> bool {
+    close(host, player);
+    let before = back(host, player);
+    if !set_back(host, player, Some(stack)) {
+        return false;
+    }
+    if let Some(before) = before {
+        let _ = player.give_stack(host, before);
+    }
+    true
+}
+
+/// A player throws an item. A creative inventory lets a stack off its cursor no other way than a
+/// throw, so a bag clicked onto the back slot there arrives as one, and the player's game says
+/// so (`thrown`) in the tick of the click: before the throw when the button is let go later,
+/// after it otherwise. A throw that was awaited is worn and never lands (true: cancel it); any
+/// other bag thrown is remembered for a moment, in case the word comes after.
+pub fn item_toss(host: &mut dyn ServerHost, event: &mut mod_api::ItemTossEvent) -> bool {
+    let Some(stack) = event.item.stack(host) else { return false };
+    if stack.count() != 1 || bag(&stack).is_none() {
+        return false;
+    }
+    let awaited = {
+        let mut all = throws_awaited();
+        all.retain(|(_, at)| at.elapsed().as_secs() < 5);
+        all.iter().position(|(uuid, _)| *uuid == event.player).map(|i| all.remove(i)).is_some()
+    };
+    if awaited
+        && let Some(player) = host.players().server_players().into_iter().find(|p| p.uuid() == event.player)
+        && wear_thrown(host, player, stack)
+    {
+        return true;
+    }
+    let mut all = thrown();
+    all.retain(|(.., at)| at.elapsed().as_secs() < 2);
+    all.push((event.player, event.item, std::time::Instant::now()));
+    false
+}
+
+/// `player` says the bag they throw was thrown onto their back slot: one just thrown is worn
+/// and its item entity is gone; else the throw to come is awaited.
 fn thrown_on_slot(host: &mut dyn ServerHost, player: PlayerRef) {
     let found = {
         let mut all = thrown();
         all.iter().rposition(|(uuid, _, at)| *uuid == player.uuid() && at.elapsed().as_secs() < 2).map(|i| all.remove(i).1)
     };
-    let Some(item) = found else { return };
+    let Some(item) = found else {
+        throws_awaited().push((player.uuid(), std::time::Instant::now()));
+        return;
+    };
     let Some(stack) = item.stack(host) else { return };
     if stack.count() != 1 || bag(&stack).is_none() {
         return;
     }
-    close(host, player);
-    // Onto the back first, out of the world after: a failure leaves the bag lying there.
-    let before = back(host, player);
-    if !set_back(host, player, Some(stack)) {
-        return;
-    }
-    if !item.entity().discard(host) {
-        set_back(host, player, before);
-        return;
-    }
-    if let Some(before) = before {
-        let _ = player.give_stack(host, before);
+    // Out of the world first: a bag that can't be taken from it stays lying there, unworn.
+    if item.entity().discard(host) && !wear_thrown(host, player, stack.clone()) {
+        let _ = player.give_stack(host, stack);
     }
 }
 

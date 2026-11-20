@@ -382,6 +382,14 @@ fn bag() -> ModelPart {
     let shell = CubeListBuilder::create()
         .tex_offs(0, 0)
         .add_box([-4.0, 4.0, 2.0], [8.0, 8.0, 5.0])
+        .tex_offs(0, 13)
+        .add_box([-3.0, 7.0, 7.0], [6.0, 5.0, 2.0])
+        .tex_offs(50, 0)
+        .add_box([-5.0, 7.0, 3.0], [1.0, 4.0, 3.0])
+        .add_box_mirrored([4.0, 7.0, 3.0], [1.0, 4.0, 3.0], true);
+    // The narrower section the cat looks out of, with the handle: a part of its own, so the
+    // tuning file's `short` can show the bag without it.
+    let top = CubeListBuilder::create()
         .tex_offs(26, 0)
         .add_box([-3.0, 1.0, 2.0], [6.0, 3.0, 1.0])
         .tex_offs(26, 4)
@@ -389,14 +397,10 @@ fn bag() -> ModelPart {
         .tex_offs(40, 0)
         .add_box([-3.0, 1.0, 3.0], [1.0, 3.0, 4.0])
         .add_box_mirrored([2.0, 1.0, 3.0], [1.0, 3.0, 4.0], true)
-        .tex_offs(0, 13)
-        .add_box([-3.0, 7.0, 7.0], [6.0, 5.0, 2.0])
-        .tex_offs(50, 0)
-        .add_box([-5.0, 7.0, 3.0], [1.0, 4.0, 3.0])
-        .add_box_mirrored([4.0, 7.0, 3.0], [1.0, 4.0, 3.0], true)
         .tex_offs(58, 0)
         .add_box([-1.0, 0.0, 2.0], [2.0, 1.0, 1.0]);
     mesh.add_or_replace_child(root, "shell", shell, PartPose::ZERO);
+    mesh.add_or_replace_child(root, "top", top, PartPose::ZERO);
     let hinge = PartPose::offset(LID_HINGE[0], LID_HINGE[1], LID_HINGE[2]);
     mesh.add_or_replace_child(root, "lid", one(26, 8, [-3.0, -1.0, 0.0], [6.0, 1.0, 5.0]), hinge);
     mesh.add_or_replace_child(root, "strap_top_r", one(32, 24, [-3.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
@@ -409,7 +413,7 @@ fn bag() -> ModelPart {
 /// What a pose is made of: `key = a b c` lines of the tuning file replace the shown cat's numbers.
 /// Places are in the bag's frame (texels, +y down, +z away from the player's back), turns in
 /// degrees (the cat's parts turn in the cat's own frame, which looks along -z).
-const KEYS: [&str; 13] = [
+const KEYS: [&str; 14] = [
     // The cat's size against the game's own model of it.
     "scale",
     // How far the lid swings from lying shut, in degrees: three quarters of a turn, over the
@@ -432,6 +436,9 @@ const KEYS: [&str; 13] = [
     "paw",
     // For looking at the hiding: 0 to 1 holds the cat that far ducked; below 0, the game decides.
     "hide",
+    // A trial of a shorter bag: above 0, the top section is not drawn and the lid and the cat
+    // sit that many texels lower, on the trunk (3 is the section's height).
+    "short",
 ];
 
 /// The grown cat's pose, in `KEYS`' order: sitting on the trunk's top in the well, by its front
@@ -451,6 +458,7 @@ const CAT_POSE: [[f32; 3]; KEYS.len()] = [
     [1.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
     [-1.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
 ];
 
 /// The kitten's pose: the same seat, only its head over the wall.
@@ -468,6 +476,7 @@ const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [1.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
     [-1.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
 ];
 
 #[derive(Clone)]
@@ -520,8 +529,13 @@ fn rad(deg: [f32; 3]) -> [f32; 3] {
 /// The lid's turn: from standing open behind the cat (`shut` 0, the pose's angle up from lying)
 /// down to lying over the well (`shut` 1).
 fn pose_bag(bag: &mut ModelPart, t: &Tune, shut: f32) {
+    let short = t.get("short")[0].max(0.0);
     if let Some(lid) = bag.get_child_mut("lid") {
         lid.x_rot = (t.get("open")[0] * (1.0 - shut)).to_radians();
+        lid.y = LID_HINGE[1] + short;
+    }
+    if let Some(top) = bag.get_child_mut("top") {
+        top.visible = short == 0.0;
     }
 }
 
@@ -754,11 +768,12 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
     cat.x_scale = scale;
     cat.y_scale = scale;
     cat.z_scale = scale;
+    let short = t.get("short")[0].max(0.0);
     // Ducking, a part also draws back from the front wall, so nothing of it shows through.
     let place = |part: &mut ModelPart, key: &str, duck: f32, bob: f32| {
         let [x, y, z] = t.get(key);
         let back = duck.clamp(0.0, 1.0);
-        part.set_pos(-x / scale, (y + DUCK * duck + bob) / scale, -(z - DRAW_BACK * back) / scale);
+        part.set_pos(-x / scale, (y + short + DUCK * duck + bob) / scale, -(z - DRAW_BACK * back) / scale);
     };
     if let Some(body) = cat.get_child_mut("body") {
         place(body, "body_at", f.duck, f.bob * 0.6);
