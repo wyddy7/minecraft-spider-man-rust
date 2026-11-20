@@ -429,6 +429,9 @@ fn bag() -> ModelPart {
     mesh.add_or_replace_child(root, "strap_top_l", one(32, 24, [2.0, -0.5, -2.5], [1.0, 0.5, 5.0]), PartPose::ZERO);
     mesh.add_or_replace_child(root, "strap_front_r", one(48, 24, [-3.0, 0.0, -2.75], [1.0, 7.0, 0.5]), PartPose::ZERO);
     mesh.add_or_replace_child(root, "strap_front_l", one(48, 24, [2.0, 0.0, -2.75], [1.0, 7.0, 0.5]), PartPose::ZERO);
+    // The same straps as the bag carries them off a back: lying flat down its back panel.
+    mesh.add_or_replace_child(root, "strap_flat_r", one(48, 24, [-3.0, 4.5, 1.5], [1.0, 7.0, 0.5]), PartPose::ZERO);
+    mesh.add_or_replace_child(root, "strap_flat_l", one(48, 24, [2.0, 4.5, 1.5], [1.0, 7.0, 0.5]), PartPose::ZERO);
     LayerDefinition::create(mesh, 64, 32).bake_root()
 }
 
@@ -763,9 +766,10 @@ fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
     let (duck_to, shut_to, hiding) = if since < FLINCH {
         (-0.18, 0.0, true)
     } else if since < PEEK_AT {
-        (1.0, if m.duck.x > 0.7 { 1.0 } else { 0.0 }, true)
+        (1.0, if m.duck.x > 0.85 { 1.0 } else { 0.0 }, true)
     } else if since < OUT_AT {
-        (0.42, 0.74, true)
+        // Peeking: the lid lifted some thirty degrees, the cat's eyes under its edge.
+        (0.45, 0.89, true)
     } else {
         (0.25 * rush, 0.0, false)
     };
@@ -853,8 +857,8 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
     // Ducking, a part also draws back from the front wall, so nothing of it shows through.
     let place = |part: &mut ModelPart, key: &str, duck: f32, bob: f32| {
         let [x, y, z] = t.get(key);
-        let back = duck.clamp(0.0, 1.0);
-        part.set_pos(-x / scale, (y + short + DUCK * duck + bob) / scale, -(z - DRAW_BACK * back) / scale);
+        let (back, down) = duck_path(duck);
+        part.set_pos(-x / scale, (y + short + DUCK * down + bob) / scale, -(z - DRAW_BACK * back) / scale);
     };
     if let Some(body) = cat.get_child_mut("body") {
         place(body, "body_at", f.duck, f.bob * 0.6);
@@ -926,8 +930,8 @@ impl EntityRenderLayer for Layer {
             let Some(arm) = parts.and_then(|p| p.get(if off { HumanoidPart::LeftArm } else { HumanoidPart::RightArm })) else { continue };
             let tune = Tune::current(bag.kind);
             let side = if off { -1.0 } else { 1.0 };
-            let frame = if bag.kind == Kind::Empty {
-                Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() }
+            let frame = if let Some(still) = held_still(bag.kind, &tune) {
+                still
             } else {
                 let living = entity.living.as_ref();
                 let (walk, stride) = living.map_or((0.0, 0.0), |l| (l.walk_animation_speed.clamp(0.0, 1.5), l.walk_animation_pos));
@@ -959,7 +963,7 @@ impl EntityRenderLayer for Layer {
             let size = tune.get("arm_scale")[0].max(0.05);
             draw.scale([size; 3]);
             draw.translate(BAG_MIDDLE.map(|c| -c / 16.0));
-            draw_bag(draw, &bag, &tune, &frame);
+            draw_bag(draw, &bag, &tune, &frame, false);
             draw.pop();
         }
         let Some(worn) = worn else { return Ok(()) };
@@ -971,14 +975,49 @@ impl EntityRenderLayer for Layer {
         draw.translate([0.0, -1.501, 0.0]);
         apply(draw, &body.pose);
         // The tuning file's `hide` holds the cat that far ducked, for looking at it.
-        let frame = match tune.get("hide")[0] {
-            _ if worn.kind == Kind::Empty => Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() },
-            h if h >= 0.0 => Frame { duck: h, paws: [h; 2], shut: ((h - 0.5) / 0.5).clamp(0.0, 1.0), hidden: h > 0.98, ..Frame::default() },
-            _ => motion(entity, &tune),
-        };
-        draw_bag(draw, &worn, &tune, &frame);
+        let frame = held_still(worn.kind, &tune).unwrap_or_else(|| motion(entity, &tune));
+        draw_bag(draw, &worn, &tune, &frame, true);
         draw.pop();
         Ok(())
+    }
+}
+
+/// How far ducked (0 out, 1 down) the cat has drawn back from the front wall, and how far it has
+/// gone down: back first, over the wall's top, and down only once clear of it, so neither its
+/// head nor its paws pass through the wall. Coming out is the same way round. A cat popping up
+/// (below 0) only rises.
+fn duck_path(duck: f32) -> (f32, f32) {
+    if duck <= 0.0 {
+        return (0.0, duck);
+    }
+    ((duck * 3.0).min(1.0), ((duck - 0.25) / 0.75).max(0.0))
+}
+
+/// `frame` with the cat held under its lid: while the lid is over the well, the cat is at least
+/// as far down as the lid's slope leaves room for, so the lid never passes through its head (a
+/// lid lifted 30 degrees lets it peek; a shut one needs it nearly all the way down).
+fn settled(frame: &Frame, tune: &Tune) -> Frame {
+    let mut frame = *frame;
+    let lift = tune.get("open")[0] * (1.0 - frame.shut.clamp(0.0, 1.0));
+    if lift < 90.0 {
+        // The head's top against the lid's underside above it, 3.8 texels out from the hinge.
+        let down = ((2.7 - 3.8 * lift.to_radians().sin()) / DUCK).clamp(0.0, 1.0);
+        if down > 0.0 {
+            let duck = 0.25 + 0.75 * down;
+            frame.duck = frame.duck.max(duck);
+            frame.paws = frame.paws.map(|paw| paw.max(duck));
+        }
+    }
+    frame
+}
+
+/// The frame of a bag that isn't moved by its cat: an empty one, shut; or, for looking at the
+/// hiding, the tuning file's `hide` holding the cat that far ducked.
+fn held_still(kind: Kind, tune: &Tune) -> Option<Frame> {
+    match tune.get("hide")[0] {
+        _ if kind == Kind::Empty => Some(Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() }),
+        h if h >= 0.0 => Some(Frame { duck: h, paws: [h; 2], shut: ((h - 0.5) / 0.5).clamp(0.0, 1.0), hidden: h > 0.98, ..Frame::default() }),
+        _ => None,
     }
 }
 
@@ -986,9 +1025,23 @@ impl EntityRenderLayer for Layer {
 const BAG_MIDDLE: [f32; 3] = [0.0, 6.5, 4.5];
 
 /// Draws the bag and its cat, posed for `frame`, in the frame `draw` stands in.
-fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, frame: &Frame) {
+fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, frame: &Frame, on_back: bool) {
+    let frame = &settled(frame, tune);
     if let Some(bag) = lock(&BAG).as_mut() {
         pose_bag(bag, tune, frame.shut);
+        // Over shoulders the straps hang as worn; off a back they lie flat against the bag.
+        for (name, worn_strap) in [
+            ("strap_top_r", true),
+            ("strap_top_l", true),
+            ("strap_front_r", true),
+            ("strap_front_l", true),
+            ("strap_flat_r", false),
+            ("strap_flat_l", false),
+        ] {
+            if let Some(strap) = bag.get_child_mut(name) {
+                strap.visible = worn_strap == on_back;
+            }
+        }
         draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
     }
     if let Some(cat) = lock(worn.kind.model()).as_mut() {
@@ -1008,8 +1061,8 @@ pub fn render_hand(host: &dyn mod_api::ClientHost, event: &mut mod_api::RenderHa
     let id = event.render.player_entity_id as u32;
     let now = CLOCK.load(Ordering::Relaxed);
     let age = now as f32 + event.render.partial;
-    let frame = if worn.kind == Kind::Empty {
-        Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() }
+    let frame = if let Some(still) = held_still(worn.kind, &tune) {
+        still
     } else {
         let velocity = lock(&VELOCITY).iter().find(|(other, _)| *other == id).map_or([0.0; 3], |(_, v)| *v);
         let walk = (velocity[0].hypot(velocity[2]) * 5.0).clamp(0.0, 1.5);
@@ -1040,7 +1093,7 @@ pub fn render_hand(host: &dyn mod_api::ClientHost, event: &mut mod_api::RenderHa
     let size = tune.get("hand_scale")[0].max(0.05);
     draw.scale([size, -size, -size]);
     draw.translate(BAG_MIDDLE.map(|c| -c / 16.0));
-    draw_bag(draw, &worn, &tune, &frame);
+    draw_bag(draw, &worn, &tune, &frame, false);
     draw.pop();
     true
 }
