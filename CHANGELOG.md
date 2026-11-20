@@ -3,8 +3,8 @@
 ## Unreleased
 
 - Back catpack: a backpack that carries your cat. Craft it (leather, string, a chest) or take it from the
-  mod's creative tab. Use it on your own tamed cat and the cat rides in it, a kitten grows there, and "Let out"
-  in the bag's window sets the same cat down where you stand, with its name, collar and owner.
+  mod's creative tab. Use it on your own tamed cat and the cat rides in it, a kitten grows there, and sneak-use
+  on top of a block sets the same cat down there, as a bucket empties, with its name, collar and owner.
 - The bag is worn in a back slot beside the inventory (the chest slot stays free): sneak and use it, click the
   slot with it, or shift-click it; G opens it (27 slots), Shift+G takes it off. Its tooltip shows what it holds.
 - The cat looks around, kneads and breathes, hides in the bag when its carrier is hurt, and is alive in a hand

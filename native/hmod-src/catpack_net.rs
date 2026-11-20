@@ -14,7 +14,6 @@
 //!   - `slot`: I clicked my back slot, and the pickup click I send next is that slot's (the bags
 //!     on my cursor and my back change places); `noslot`: that click was not sent after all;
 //!   - `wear` (inventory slot `s`): put that bag on my back, the worn one into its place;
-//!   - `out`: let the cat out of the bag in my hand, whose window is open, where I stand;
 //!   - `hand`: take my bag off my back into my main hand (the bag's key with shift);
 //!   - `swap` (hotbar slot `s`): my back and that slot change places (a number key over the slot);
 //!   - `thrown`: the bag I just threw, I threw onto my back slot (a creative inventory lets a

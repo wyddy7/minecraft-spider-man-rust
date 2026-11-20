@@ -9,8 +9,7 @@
 //! - **In**: use a bag in the hand on your own tamed cat, or, wearing the bag, sneak and use the
 //!   cat. A bag that holds a cat, someone else's cat and an untamed one are refused with a line
 //!   over the hotbar.
-//! - **Out**: the "Let out" button of the window of a bag in the hand; the cat comes out where
-//!   its carrier stands. No click in the world lets a cat out: that is too easily a slip.
+//! - **Out**: sneak and use the bag on the top of a block with two clear blocks above it.
 //! - **Growing**: a kitten in a bag in a player's inventory grows as it would outside (not one
 //!   whose age is locked); grown, the bag shows a grown cat.
 //!
@@ -29,7 +28,7 @@
 
 use mod_api::{
     Compound, EntityInteractEvent, HostSide, InteractionResult, ItemStack, LivingRef, PlayerRef,
-    ServerHost, SpawnReason, Tag, Text,
+    ServerHost, SpawnReason, Tag, Text, UseItemOnBlockEvent,
 };
 
 use crate::catpack::VARIANTS;
@@ -262,19 +261,56 @@ fn release(host: &mut dyn ServerHost, player: PlayerRef, stack: &ItemStack, mut 
     rewritten(stack, custom, "spider_man:catpack").ok_or("The cat can't come out here")
 }
 
-/// The window's "Let out": the cat in the bag in `player`'s hand comes out where they stand.
-/// Only a bag in the hand lets its cat out, never one on the back, and never a click in the
-/// world, which is too easily a slip.
-fn let_out(host: &mut dyn ServerHost, player: PlayerRef) {
-    let Some((Source::Hand(hand), stack)) = open_bag(host, player) else { return };
-    let Some(Bag::Holding(custom)) = bag(&stack) else { return };
-    let Some(place) = player.entity().position(host) else { return };
-    close(host, player);
-    match release(host, player, &stack, custom, place) {
-        Ok(empty) => {
-            let _ = LivingRef::new(player.entity()).set_hand_item(host, hand, Some(empty));
+/// A player uses what they hold on a block: sneaking, a bag with a cat lets it out on top of
+/// the block, as a bucket empties.
+pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) -> Option<InteractionResult> {
+    let click = event.click;
+    let stack = click.stack?;
+    let Bag::Holding(custom) = bag(stack)? else { return None };
+    // Once a click: before the block has its say.
+    if event.phase != mod_api::UsePhase::ItemBeforeBlock {
+        return None;
+    }
+    let host = match host {
+        HostSide::Server(host) => host,
+        // The client says the click is taken where the server will let the cat out, so it
+        // doesn't go on to use the item as well (which would put the emptied bag on the back).
+        HostSide::Client(host) => {
+            let sneaking = host.local_player().is_some_and(|p| p.entity().is_shift_key_down(host) == Some(true));
+            return (sneaking && click.hit.face == [0, 1, 0]).then_some(InteractionResult::Success);
         }
-        Err(why) => say(host, player, why),
+    };
+    let player = match host.players().acting_player() {
+        Some(player) => player,
+        None => host.players().server_players().into_iter().find(|p| p.uuid() == click.player)?,
+    };
+    if player.entity().is_shift_key_down(host) != Some(true) {
+        return None;
+    }
+    let level = player.entity().level(host)?;
+    let face = click.hit.face;
+    let floor = click.pos;
+    let at = [floor[0] + face[0], floor[1] + face[1], floor[2] + face[2]];
+    let above = [at[0], at[1] + 1, at[2]];
+    let clear = |host: &dyn ServerHost, pos: [i32; 3]| level.block(host, pos).is_some_and(|b| b.id(host) == "minecraft:air");
+    // Any other face is not asking for the cat: the click goes on (and puts the bag on).
+    if face != [0, 1, 0] {
+        return None;
+    }
+    if clear(host, floor) || !clear(host, at) || !clear(host, above) {
+        say(host, player, "Let the cat out on top of a block with room above it");
+        return Some(InteractionResult::Fail);
+    }
+    let place = [f64::from(at[0]) + 0.5, f64::from(at[1]), f64::from(at[2]) + 0.5];
+    match release(host, player, stack, custom, place) {
+        Ok(empty) => {
+            let _ = LivingRef::new(player.entity()).set_hand_item(host, click.hand, Some(empty));
+            Some(InteractionResult::SuccessServer)
+        }
+        Err(why) => {
+            say(host, player, why);
+            Some(InteractionResult::Fail)
+        }
     }
 }
 
@@ -914,11 +950,7 @@ fn show(host: &mut dyn ServerHost, player: PlayerRef) {
     let carried = player.inventory_slots(host).unwrap_or_default().into_iter().filter(|(slot, _)| *slot < 36).map(|(slot, s)| (slot as usize, s));
     let carried = stacks(host, carried);
     let from_back = matches!(source, Source::Back);
-    let cat = matches!(bag(&stack), Some(Bag::Holding(_)));
-    let window = crate::catpack_net::message(
-        "window",
-        [("open", Tag::Byte(1)), ("items", held), ("inv", carried), ("back", Tag::Byte(from_back as i8)), ("cat", Tag::Byte(cat as i8))],
-    );
+    let window = crate::catpack_net::message("window", [("open", Tag::Byte(1)), ("items", held), ("inv", carried), ("back", Tag::Byte(from_back as i8))]);
     crate::catpack_net::tell(host, player, window);
 }
 
@@ -993,7 +1025,6 @@ pub fn asked(message: Compound, context: &mut dyn mod_api::IPayloadContext) {
         ("wear", Some(slot)) => wear_from(host, player, slot),
         ("swap", Some(slot)) => swap_with(host, player, slot),
         ("hand", _) => quick_off(host, player),
-        ("out", _) => let_out(host, player),
         ("thrown", _) => thrown_on_slot(host, player),
         ("open", _) => open(host, player, Source::Back),
         ("close", _) => close(host, player),

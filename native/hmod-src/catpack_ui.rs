@@ -25,9 +25,8 @@ static BACKS: Mutex<Vec<(u32, String, String, Instant)>> = Mutex::new(Vec::new()
 static WINDOW: Mutex<Option<(Vec<(usize, ItemStack)>, Vec<(usize, ItemStack)>)>> = Mutex::new(None);
 /// The bag on this player's own back, whole, for the inventory's back slot.
 static MINE: Mutex<Option<ItemStack>> = Mutex::new(None);
-/// The open window is the worn bag's (it has "Take off"); it is a bag in the hand with a cat in
-/// it (it has "Let out").
-static WINDOW_OF: Mutex<(bool, bool)> = Mutex::new((false, false));
+/// The open window is the worn bag's: it has "Take off".
+static WINDOW_OF: Mutex<bool> = Mutex::new(false);
 /// The key that opens the worn bag, as Controls lists it.
 pub const KEY: &str = "catpack";
 /// The player clicked the back slot; the next tick sees to it.
@@ -98,8 +97,7 @@ pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
                 host.mod_screen_close(MOD);
                 return;
             }
-            let flag = |key: &str| matches!(told.get(&key.into()), Some(Tag::Byte(1)));
-            *lock(&WINDOW_OF) = (flag("back"), flag("cat"));
+            *lock(&WINDOW_OF) = matches!(told.get(&"back".into()), Some(Tag::Byte(1)));
             let window = (stacks(host, &told, "items"), stacks(host, &told, "inv"));
             let first = lock(&WINDOW).replace(window).is_none();
             if first && !host.mod_screen_open(MOD) {
@@ -304,13 +302,9 @@ pub fn key_on_window(host: &dyn ClientHost, key: &str) -> bool {
 static CLOSE: Mutex<bool> = Mutex::new(false);
 
 /// The open window's one button, with what it asks of the server: "Take off" on the worn bag's
-/// window, "Let out" on the window of a bag in the hand that holds a cat, none otherwise.
+/// window, none on the window of a bag in the hand.
 fn window_button() -> Option<(&'static str, &'static str)> {
-    match *lock(&WINDOW_OF) {
-        (true, _) => Some(("Take off", "off")),
-        (false, true) => Some(("Let out", "out")),
-        (false, false) => None,
-    }
+    lock(&WINDOW_OF).then_some(("Take off", "off"))
 }
 
 /// The window's button: `[x, y, w, h]`.
