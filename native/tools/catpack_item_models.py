@@ -184,13 +184,30 @@ DISPLAY = {
     "ground": {"rotation": [0, 0, 0], "translation": [0, 2, 0], "scale": [0.5, 0.5, 0.5]},
     "fixed": {"rotation": [0, 180, 0], "translation": [0, 0, 0], "scale": [0.9, 0.9, 0.9]},
     "head": {"rotation": [0, 180, 0], "translation": [0, 8, 0], "scale": [1, 1, 1]},
-    # In a player's hand the bag is drawn alive by the mod (`catpack.rs`: the arm layer and
-    # `render_hand`), so its still model is shrunk out of sight there.
-    "thirdperson_righthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.001, 0.001, 0.001]},
-    "thirdperson_lefthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.001, 0.001, 0.001]},
+    "thirdperson_righthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.5, 0.5, 0.5]},
+    "thirdperson_lefthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.5, 0.5, 0.5]},
     "firstperson_righthand": {"rotation": [0, -30, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
     "firstperson_lefthand": {"rotation": [0, 30, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
 }
+
+
+def item(model):
+    """An item definition for `model`. In a player's hand, seen from outside, the bag is drawn
+    alive by the mod (the arm layer of `catpack.rs`), so there the still model is left out; any
+    other holder (an armor stand, a mob) and every other place show the still model."""
+    still = {"type": "minecraft:model", "model": model}
+    in_hand = {
+        "type": "minecraft:select",
+        "property": "minecraft:display_context",
+        "cases": [{"when": ["thirdperson_righthand", "thirdperson_lefthand"], "model": {"type": "minecraft:empty"}}],
+        "fallback": still,
+    }
+    return {"model": {
+        "type": "minecraft:select",
+        "property": "minecraft:context_entity_type",
+        "cases": [{"when": "minecraft:player", "model": in_hand}],
+        "fallback": still,
+    }}
 
 
 def write(path, data):
@@ -209,7 +226,7 @@ def main():
     write(models / "catpack.json", {
         "textures": {"bag": bag, "particle": bag}, "display": DISPLAY, "elements": shell() + [lid_shut()],
     })
-    write(items / "catpack.json", {"model": {"type": "minecraft:model", "model": "spider_man:item/catpack"}})
+    write(items / "catpack.json", item("spider_man:item/catpack"))
     for kind, parts, suffix in [("cat", grown_cat(), ""), ("kitten", kitten(), "_baby")]:
         write(models / f"catpack_{kind}.json", {
             "textures": {"bag": bag, "particle": bag}, "display": DISPLAY,
@@ -221,7 +238,7 @@ def main():
                 "parent": f"spider_man:item/catpack_{kind}",
                 "textures": {"cat": f"minecraft:entity/cat/cat_{variant}{suffix}"},
             })
-            write(items / f"{name}.json", {"model": {"type": "minecraft:model", "model": f"spider_man:item/{name}"}})
+            write(items / f"{name}.json", item(f"spider_man:item/{name}"))
     print(models)
 
 
