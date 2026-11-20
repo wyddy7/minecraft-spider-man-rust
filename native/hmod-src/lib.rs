@@ -175,6 +175,10 @@ impl Hooks for Mod {
 
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
         catpack_ui::draw(host, event.draw, event.screen.mouse);
+        catpack_ui::draw_slot_label(event.draw, event.screen);
+    }
+
+    fn screen_render_background(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenRenderBackgroundEvent<'_>) {
         catpack_ui::draw_slot(event.draw, event.screen);
     }
 

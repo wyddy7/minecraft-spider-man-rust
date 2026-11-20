@@ -300,7 +300,8 @@ fn back_slot(screen: &mod_api::ScreenView<'_>) -> Option<[f32; 2]> {
     (matches!(screen.id, "inventory" | "creative") && screen.menu.is_none()).then(|| [screen.rect[0] - CELL - 4.0, screen.rect[1] + 7.0])
 }
 
-/// Draws the back slot on the inventory: the bag worn, or an empty cell.
+/// Draws the back slot on the inventory: the bag worn, or an empty cell. Drawn with the screen's
+/// background, so the stack on the cursor passes over it as over the game's own slots.
 pub fn draw_slot(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
     let Some([x, y]) = back_slot(screen) else { return };
     let mine = lock(&MINE).clone();
@@ -314,7 +315,14 @@ pub fn draw_slot(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
     }
     if over([x, y, CELL, CELL], screen.mouse) {
         draw.fill([x + 1.0, y + 1.0, CELL - 2.0, CELL - 2.0], 0x80FF_FFFF);
-        draw.text(if mine.is_some() { "Back catpack" } else { "Back" }, [x, y - 12.0], 0xFFFF_FFFF, true);
+    }
+}
+
+/// The back slot's name, over everything, while the mouse is on it.
+pub fn draw_slot_label(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
+    let Some([x, y]) = back_slot(screen) else { return };
+    if over([x, y, CELL, CELL], screen.mouse) {
+        draw.text(if lock(&MINE).is_some() { "Back catpack" } else { "Back" }, [x, y - 12.0], 0xFFFF_FFFF, true);
     }
 }
 
