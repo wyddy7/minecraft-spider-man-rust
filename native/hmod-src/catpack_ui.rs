@@ -117,12 +117,14 @@ pub fn tick(host: &mut dyn ClientHost) {
     if std::mem::take(&mut *lock(&CLOSE)) && host.mod_screen() == Some(MOD) {
         host.mod_screen_close(MOD);
     }
-    // The bag's key opens the bag on the back; with shift it swaps the main hand with the back,
-    // as the off hand's key swaps the hands: a bag held is put on, the worn one comes to hand.
+    // The bag's key opens the bag on the back; with shift it takes the bag off, into the hand.
     while host.consume_click(MOD, KEY) {
+        if lock(&MINE).is_none() {
+            continue;
+        }
         if host.modifiers().shift() {
             lock(&ASKS).push(message("hand", []));
-        } else if lock(&MINE).is_some() {
+        } else {
             lock(&ASKS).push(message("open", []));
         }
     }

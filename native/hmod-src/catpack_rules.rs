@@ -326,8 +326,8 @@ static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex:
 //
 // - **On**: sneak and use a bag in the hand (anywhere but on the top of a block when the bag
 //   holds a cat: that lets the cat out). A bag already on the back comes into the hand.
-// - **The key with shift**: the main hand and the back change places, as the off hand's key
-//   swaps the hands. This is the quick way on and off.
+// - **The key with shift**: the quick way off. The bag goes into the main hand when it is empty,
+//   else into the inventory.
 // - **The slot**, beside the inventory: a click swaps the bag on the cursor with the worn one
 //   (either may be none), inside a pickup click of the game's own (`stacked_on_other`); shift-click on a bag in the inventory wears it, the worn one taking its
 //   place; shift-click on the slot, or the window's Take off, puts the worn bag into the
@@ -501,22 +501,19 @@ fn swap_with(host: &mut dyn ServerHost, player: PlayerRef, slot: u32) {
     }
 }
 
-/// `player`'s main hand and back change places (the bag's key with shift): a bag held is put on,
-/// the worn one comes to hand. A hand holding anything else is left alone.
-fn swap_hand(host: &mut dyn ServerHost, player: PlayerRef) {
+/// The bag's key with shift: the bag comes off `player`'s back, into their main hand when it is
+/// empty, else into their inventory. It puts nothing on.
+fn quick_off(host: &mut dyn ServerHost, player: PlayerRef) {
+    let Some(worn) = back(host, player) else { return };
     let living = LivingRef::new(player.entity());
-    let held = living.hand_item(host, mod_api::Hand::Main);
-    let worn = back(host, player);
-    if held.as_ref().is_some_and(|stack| stack.count() != 1 || bag(stack).is_none()) || (held.is_none() && worn.is_none()) {
+    if living.hand_item(host, mod_api::Hand::Main).is_some() {
+        take_off(host, player);
         return;
     }
     close(host, player);
-    // The back first, the hand after.
-    if !set_back(host, player, held.clone()) {
-        return;
-    }
-    if !matches!(living.set_hand_item(host, mod_api::Hand::Main, worn.clone()), Ok(true)) {
-        set_back(host, player, worn);
+    // Into the hand first, off the back after.
+    if matches!(living.set_hand_item(host, mod_api::Hand::Main, Some(worn)), Ok(true)) && !set_back(host, player, None) {
+        let _ = living.set_hand_item(host, mod_api::Hand::Main, None);
     }
 }
 
@@ -936,7 +933,7 @@ pub fn asked(message: Compound, context: &mut dyn mod_api::IPayloadContext) {
         ("noslot", _) => slot_clicks().retain(|(uuid, _)| *uuid != player.uuid()),
         ("wear", Some(slot)) => wear_from(host, player, slot),
         ("swap", Some(slot)) => swap_with(host, player, slot),
-        ("hand", _) => swap_hand(host, player),
+        ("hand", _) => quick_off(host, player),
         ("thrown", _) => thrown_on_slot(host, player),
         ("open", _) => open(host, player, Source::Back),
         ("close", _) => close(host, player),
