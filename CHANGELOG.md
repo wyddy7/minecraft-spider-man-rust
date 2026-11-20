@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Back catpack: a backpack that carries your cat. Craft it (leather, string, a chest) or take it from the
+  mod's creative tab. Use it on your own tamed cat and the cat rides in it, a kitten grows there, and "Let out"
+  in the bag's window sets the same cat down where you stand, with its name, collar and owner.
+- The bag is worn in a back slot beside the inventory (the chest slot stays free): sneak and use it, click the
+  slot with it, or shift-click it; G opens it (27 slots), Shift+G takes it off. Its tooltip shows what it holds.
+- The cat looks around, kneads and breathes, hides in the bag when its carrier is hurt, and is alive in a hand
+  too. A bag does not burn, drops with its cat when its wearer dies, and stays on with `keep_inventory`.
+- In your own world only for now: a dedicated server needs the mod too, and that is not tested.
 - Camera distance: a slider on the mod's page (Options > Mods > Spider-Man > Config, 2 to 12 blocks, 6 as
   before) and `/swingmode camera`; in flight the camera still backs off 2 blocks more.
 - "Reset all to defaults" on the mod's page puts the web delay and the camera distance back (the rows show it the
