@@ -184,8 +184,10 @@ DISPLAY = {
     "ground": {"rotation": [0, 0, 0], "translation": [0, 2, 0], "scale": [0.5, 0.5, 0.5]},
     "fixed": {"rotation": [0, 180, 0], "translation": [0, 0, 0], "scale": [0.9, 0.9, 0.9]},
     "head": {"rotation": [0, 180, 0], "translation": [0, 8, 0], "scale": [1, 1, 1]},
-    "thirdperson_righthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.5, 0.5, 0.5]},
-    "thirdperson_lefthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.5, 0.5, 0.5]},
+    # In a player's hand the bag is drawn alive by the mod (`catpack.rs`: the arm layer and
+    # `render_hand`), so its still model is shrunk out of sight there.
+    "thirdperson_righthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.001, 0.001, 0.001]},
+    "thirdperson_lefthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.001, 0.001, 0.001]},
     "firstperson_righthand": {"rotation": [0, -30, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
     "firstperson_lefthand": {"rotation": [0, 30, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
 }

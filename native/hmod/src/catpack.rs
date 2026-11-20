@@ -79,6 +79,13 @@ static FORCED_WORN: Mutex<Option<Worn>> = Mutex::new(None);
 /// Each drawn player's entity id and the bag in their chest slot, as of the last client tick: a
 /// worn stack is sent to everyone who sees its wearer, so other players' bags show too.
 static WORN: Mutex<Vec<(u32, Worn)>> = Mutex::new(Vec::new());
+/// Each drawn player's bags in hand, as of the last client tick: the entity, whether the off
+/// hand, and what the bag shows.
+static HELD: Mutex<Vec<(u32, bool, Worn)>> = Mutex::new(Vec::new());
+/// Client ticks since the game began: a held bag's clock.
+static CLOCK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// This window's own player: their health at the last tick, and the tick they last lost some.
+static OWN_HEALTH: Mutex<(f32, u32)> = Mutex::new((0.0, 0));
 /// The players whose bag was asked for since the last client tick.
 static SEEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// The two cats and the bag as built once at client start; posed again each frame.
@@ -317,6 +324,7 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
         }
     }
     let mut worn = Vec::new();
+    let mut held = Vec::new();
     let mut velocity = Vec::new();
     for id in ids {
         let Some(entity) = host.entity(id) else { continue };
@@ -327,6 +335,20 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
         if let Some(bag) = living.equipment(host, mod_api::EquipmentSlot::Chest).and_then(|stack| worn_by(&stack)) {
             worn.push((id, bag));
         }
+        for (hand, off) in [(mod_api::Hand::Main, false), (mod_api::Hand::Off, true)] {
+            if let Some(bag) = living.hand_item(host, hand).and_then(|stack| worn_by(&stack)) {
+                held.push((id, off, bag));
+            }
+        }
+    }
+    *lock(&HELD) = held;
+    let now = CLOCK.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Some(health) = host.local_player().and_then(|player| mod_api::LivingRef::new(player.entity()).health(host)) {
+        let mut own = lock(&OWN_HEALTH);
+        if health < own.0 {
+            own.1 = now;
+        }
+        own.0 = health;
     }
     // The bags on backs, as the server told this client.
     for (id, kind, variant) in crate::catpack_ui::backs() {
@@ -413,7 +435,7 @@ fn bag() -> ModelPart {
 /// What a pose is made of: `key = a b c` lines of the tuning file replace the shown cat's numbers.
 /// Places are in the bag's frame (texels, +y down, +z away from the player's back), turns in
 /// degrees (the cat's parts turn in the cat's own frame, which looks along -z).
-const KEYS: [&str; 14] = [
+const KEYS: [&str; 20] = [
     // The cat's size against the game's own model of it.
     "scale",
     // How far the lid swings from lying shut, in degrees: three quarters of a turn, over the
@@ -439,6 +461,16 @@ const KEYS: [&str; 14] = [
     // A trial of a shorter bag: above 0, the top section is not drawn and the lid and the cat
     // sit that many texels lower, on the trunk (3 is the section's height).
     "short",
+    // The bag held in a hand, seen by its holder: where its middle is in the view (blocks, +x to
+    // the hand's side, +y up, -z into the screen), its turn (pitch, yaw, roll) and its size.
+    "hand_at",
+    "hand_rot",
+    "hand_scale",
+    // The bag held in a hand, seen from outside: where its middle is on the arm (texels from the
+    // shoulder, +x outwards, +y down the arm, +z back), its turn and its size.
+    "arm_at",
+    "arm_rot",
+    "arm_scale",
 ];
 
 /// The grown cat's pose, in `KEYS`' order: sitting on the trunk's top in the well, by its front
@@ -459,6 +491,12 @@ const CAT_POSE: [[f32; 3]; KEYS.len()] = [
     [0.0, 0.0, 0.0],
     [-1.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
+    [0.46, -0.36, -0.8],
+    [8.0, 160.0, 0.0],
+    [0.5, 0.0, 0.0],
+    [1.0, 15.0, -1.0],
+    [0.0, 180.0, 0.0],
+    [0.7, 0.0, 0.0],
 ];
 
 /// The kitten's pose: the same seat, only its head over the wall.
@@ -477,6 +515,12 @@ const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [0.0, 0.0, 0.0],
     [-1.0, 0.0, 0.0],
     [0.0, 0.0, 0.0],
+    [0.46, -0.36, -0.8],
+    [8.0, 160.0, 0.0],
+    [0.5, 0.0, 0.0],
+    [1.0, 15.0, -1.0],
+    [0.0, 180.0, 0.0],
+    [0.7, 0.0, 0.0],
 ];
 
 #[derive(Clone)]
@@ -630,20 +674,52 @@ fn chance(entity: u32, slot: i32, salt: u32) -> f32 {
 /// hunkers down at speed while the lid flutters. Hurt, the carrier sends it into the bag: a
 /// start, a dive, the lid slamming with a bounce; then the lid lifts and it looks out both ways
 /// from under it, and it pops back out, head first, one paw after the other.
+/// Who carries a cat, as its motion reads them: a wearer drawn in the world, or a hand.
+struct Carrier {
+    /// One motion per key: a wearer's entity id; a hand's, its holder's with a high bit set.
+    key: u32,
+    age: f32,
+    hurt: bool,
+    body_rot: f32,
+    walk: f32,
+    stride: f32,
+    velocity: [f32; 3],
+    /// The hand's swing, 0 to 1: the cat swats along with it.
+    swing: f32,
+    /// The bag is in a hand, before its holder's eyes.
+    held: bool,
+}
+
 fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
-    let [amount, _, _] = t.get("idle");
-    let age = entity.age;
     let living = entity.living.as_ref();
-    let hurt = living.is_some_and(|l| l.has_red_overlay);
-    let body_rot = living.map_or(0.0, |l| l.body_rot);
+    let (walk, stride) = living.map_or((0.0, 0.0), |l| (l.walk_animation_speed.clamp(0.0, 1.5), l.walk_animation_pos));
+    motion_of(
+        &Carrier {
+            key: entity.id,
+            age: entity.age,
+            hurt: living.is_some_and(|l| l.has_red_overlay),
+            body_rot: living.map_or(0.0, |l| l.body_rot),
+            walk,
+            stride,
+            velocity: lock(&VELOCITY).iter().find(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| *v),
+            swing: 0.0,
+            held: false,
+        },
+        t,
+    )
+}
+
+fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
+    let [amount, _, _] = t.get("idle");
+    let Carrier { key, age, hurt, body_rot, walk, stride, velocity, swing, held } = *carrier;
     let mut all = lock(&MOTION);
     // Carriers not drawn for a while are forgotten (their age stops while they aren't).
     if all.len() > 64 {
         all.clear();
     }
-    let i = all.iter().position(|m| m.entity == entity.id).unwrap_or_else(|| {
+    let i = all.iter().position(|m| m.entity == key).unwrap_or_else(|| {
         all.push(Motion {
-            entity: entity.id,
+            entity: key,
             age,
             hit: f32::NEG_INFINITY,
             was_hurt: hurt,
@@ -679,8 +755,6 @@ fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
     }
     let turn = if dt > 0.0 { (turn / dt).clamp(-30.0, 30.0) } else { 0.0 };
     m.body_rot = body_rot;
-    let (walk, stride) = living.map_or((0.0, 0.0), |l| (l.walk_animation_speed.clamp(0.0, 1.5), l.walk_animation_pos));
-    let velocity = lock(&VELOCITY).iter().find(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| *v);
     let rise = velocity[1].clamp(-1.5, 1.0);
     let speed = velocity[0].hypot(velocity[2]).min(2.0);
     let rush = ((speed - 0.35) / 0.6).clamp(0.0, 1.0);
@@ -698,9 +772,14 @@ fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
 
     // Where the head wants to look: every three seconds a new place, held; under the lid, out
     // one way and then the other.
-    let slot = ((age + (entity.id % 97) as f32 * 7.0) / 60.0).floor() as i32;
-    let mut look = [(chance(entity.id, slot, 1) - 0.5) * 70.0, (chance(entity.id, slot, 2) - 0.6) * 22.0];
-    if chance(entity.id, slot, 3) < 0.25 {
+    let slot = ((age + (key % 97) as f32 * 7.0) / 60.0).floor() as i32;
+    let mut look = [(chance(key, slot, 1) - 0.5) * 70.0, (chance(key, slot, 2) - 0.6) * 22.0];
+    if held {
+        // In a hand it faces its holder: half the time it looks straight up at them.
+        if chance(key, slot, 3) < 0.5 {
+            look = [0.0, -18.0];
+        }
+    } else if chance(key, slot, 3) < 0.25 {
         // Now and then it looks round at its carrier.
         look = [48.0, -14.0];
     }
@@ -737,24 +816,26 @@ fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
         m.lean.step(lean_to, 0.18, 0.5, dt);
         m.bob.step(bob_to, 0.3, 0.55, dt);
         // A quick tilt of the head as a new look begins, as a cat's ear flicks.
-        let into = (age + (entity.id % 97) as f32 * 7.0).rem_euclid(60.0);
-        if into < dt && chance(entity.id, slot, 4) < 0.4 && !hiding {
-            m.roll.v += 4.0 * amount * if chance(entity.id, slot, 5) < 0.5 { 1.0 } else { -1.0 };
+        let into = (age + (key % 97) as f32 * 7.0).rem_euclid(60.0);
+        if into < dt && chance(key, slot, 4) < 0.4 && !hiding {
+            m.roll.v += 4.0 * amount * if chance(key, slot, 5) < 0.5 { 1.0 } else { -1.0 };
         }
     }
     // Kneading: a few seconds now and then, the paws pressing in turn.
-    let kneading = if !hiding && chance(entity.id, slot, 6) < 0.3 { amount * (1.0 - rush) } else { 0.0 };
+    let kneading = if !hiding && chance(key, slot, 6) < 0.3 { amount * (1.0 - rush) } else { 0.0 };
     let press = (age * 0.45).sin();
+    // The hand swings and the cat swats with it: one paw out and back, the head after it.
+    let swat = if hiding { 0.0 } else { (swing.clamp(0.0, 1.0) * std::f32::consts::PI).sin() };
     Frame {
         duck: m.duck.x,
         paws: [m.paws[0].x, m.paws[1].x],
         shut: m.lid.x.max(-0.08),
         yaw: m.yaw.x.clamp(-75.0, 75.0),
-        pitch: m.pitch.x.clamp(-35.0, 35.0),
+        pitch: (m.pitch.x + 10.0 * swat).clamp(-35.0, 35.0),
         roll: m.roll.x.clamp(-25.0, 25.0),
         lean: m.lean.x.clamp(-15.0, 15.0),
         bob: m.bob.x.clamp(-1.2, 1.6),
-        knead: [9.0 * kneading * press.max(0.0), 9.0 * kneading * (-press).max(0.0)],
+        knead: [9.0 * kneading * press.max(0.0) - 46.0 * swat, 9.0 * kneading * (-press).max(0.0) - 12.0 * swat],
         hidden: m.duck.x > 0.9 && m.lid.x > 0.93,
     }
 }
@@ -838,7 +919,50 @@ impl EntityRenderLayer for Layer {
         parts: Option<&PosedParts>,
         draw: &mut dyn BlockEntityDrawContext,
     ) -> Result<(), String> {
-        let Some(worn) = shown(entity.id) else { return Ok(()) };
+        let worn = shown(entity.id);
+        // The bags in this player's hands: on the arm, hanging from the hand as the arm swings.
+        let held: Vec<(bool, Worn)> = lock(&HELD).iter().filter(|(id, ..)| *id == entity.id).map(|(_, off, bag)| (*off, bag.clone())).collect();
+        for (off, bag) in held {
+            let Some(arm) = parts.and_then(|p| p.get(if off { HumanoidPart::LeftArm } else { HumanoidPart::RightArm })) else { continue };
+            let tune = Tune::current(bag.kind);
+            let side = if off { -1.0 } else { 1.0 };
+            let frame = if bag.kind == Kind::Empty {
+                Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() }
+            } else {
+                let living = entity.living.as_ref();
+                let (walk, stride) = living.map_or((0.0, 0.0), |l| (l.walk_animation_speed.clamp(0.0, 1.5), l.walk_animation_pos));
+                motion_of(
+                    &Carrier {
+                        key: entity.id ^ if off { 0xC000_0000 } else { 0x8000_0000 },
+                        age: entity.age,
+                        hurt: living.is_some_and(|l| l.has_red_overlay),
+                        body_rot: living.map_or(0.0, |l| l.body_rot),
+                        walk,
+                        stride,
+                        velocity: lock(&VELOCITY).iter().find(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| *v),
+                        swing: 0.0,
+                        held: true,
+                    },
+                    &tune,
+                )
+            };
+            draw.push();
+            draw.scale([1.0, -1.0, -1.0]);
+            draw.translate([0.0, -1.501, 0.0]);
+            apply(draw, &arm.pose);
+            let [x, y, z] = tune.get("arm_at");
+            draw.translate([-side * x / 16.0, y / 16.0, z / 16.0]);
+            let [pitch, yaw, roll] = tune.get("arm_rot");
+            draw.rotate_about([0.0, 1.0, 0.0], side * yaw, [0.0; 3]);
+            draw.rotate_about([1.0, 0.0, 0.0], pitch, [0.0; 3]);
+            draw.rotate_about([0.0, 0.0, 1.0], side * roll, [0.0; 3]);
+            let size = tune.get("arm_scale")[0].max(0.05);
+            draw.scale([size; 3]);
+            draw.translate(BAG_MIDDLE.map(|c| -c / 16.0));
+            draw_bag(draw, &bag, &tune, &frame);
+            draw.pop();
+        }
+        let Some(worn) = worn else { return Ok(()) };
         let Some(body) = parts.and_then(|p| p.get(HumanoidPart::Body)) else { return Ok(()) };
         let tune = Tune::current(worn.kind);
         draw.push();
@@ -852,17 +976,73 @@ impl EntityRenderLayer for Layer {
             h if h >= 0.0 => Frame { duck: h, paws: [h; 2], shut: ((h - 0.5) / 0.5).clamp(0.0, 1.0), hidden: h > 0.98, ..Frame::default() },
             _ => motion(entity, &tune),
         };
-        if let Some(bag) = lock(&BAG).as_mut() {
-            pose_bag(bag, &tune, frame.shut);
-            draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
-        }
-        if let Some(cat) = lock(worn.kind.model()).as_mut() {
-            pose(cat, &tune, &frame);
-            draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
-        }
+        draw_bag(draw, &worn, &tune, &frame);
         draw.pop();
         Ok(())
     }
+}
+
+/// The middle of the bag in its own frame, in texels: what a hand holds it by.
+const BAG_MIDDLE: [f32; 3] = [0.0, 6.5, 4.5];
+
+/// Draws the bag and its cat, posed for `frame`, in the frame `draw` stands in.
+fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, frame: &Frame) {
+    if let Some(bag) = lock(&BAG).as_mut() {
+        pose_bag(bag, tune, frame.shut);
+        draw.model_part(bag, BAG_SPRITE, 0xFF_FFFF);
+    }
+    if let Some(cat) = lock(worn.kind.model()).as_mut() {
+        pose(cat, tune, frame);
+        draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
+    }
+}
+
+/// A hand of this window's player is about to be drawn, seen by the player: a bag in it is drawn
+/// here, alive, in place of its still item model. The cat keeps to its rest, hides when its
+/// holder is hurt and swats when the hand swings. True when the hand was the bag's.
+pub fn render_hand(host: &dyn mod_api::ClientHost, event: &mut mod_api::RenderHandEvent<'_, '_>) -> bool {
+    let Some(worn) = event.render.stack.and_then(worn_by) else { return false };
+    let tune = Tune::current(worn.kind);
+    let off = event.render.hand == mod_api::Hand::Off;
+    let side = if off { -1.0 } else { 1.0 };
+    let id = event.render.player_entity_id as u32;
+    let now = CLOCK.load(Ordering::Relaxed);
+    let age = now as f32 + event.render.partial;
+    let frame = if worn.kind == Kind::Empty {
+        Frame { duck: 1.0, paws: [1.0; 2], shut: 1.0, hidden: true, ..Frame::default() }
+    } else {
+        let velocity = lock(&VELOCITY).iter().find(|(other, _)| *other == id).map_or([0.0; 3], |(_, v)| *v);
+        let walk = (velocity[0].hypot(velocity[2]) * 5.0).clamp(0.0, 1.5);
+        let hurt_at = lock(&OWN_HEALTH).1;
+        motion_of(
+            &Carrier {
+                key: id ^ if off { 0x6000_0000 } else { 0x4000_0000 },
+                age,
+                hurt: hurt_at > 0 && now.saturating_sub(hurt_at) < 8,
+                body_rot: host.entity(id).and_then(|entity| entity.rotation(host)).map_or(0.0, |r| r[0]),
+                walk,
+                stride: age * 0.6,
+                velocity,
+                swing: event.render.swing,
+                held: true,
+            },
+            &tune,
+        )
+    };
+    let draw = &mut *event.draw;
+    draw.push();
+    let [x, y, z] = tune.get("hand_at");
+    draw.translate([side * x, y - event.render.equip * 0.6, z]);
+    let [pitch, yaw, roll] = tune.get("hand_rot");
+    draw.rotate_about([0.0, 1.0, 0.0], side * yaw, [0.0; 3]);
+    draw.rotate_about([1.0, 0.0, 0.0], pitch, [0.0; 3]);
+    draw.rotate_about([0.0, 0.0, 1.0], side * roll, [0.0; 3]);
+    let size = tune.get("hand_scale")[0].max(0.05);
+    draw.scale([size, -size, -size]);
+    draw.translate(BAG_MIDDLE.map(|c| -c / 16.0));
+    draw_bag(draw, &worn, &tune, &frame);
+    draw.pop();
+    true
 }
 
 /// Adds the layer to both player models (each resource load asks again).

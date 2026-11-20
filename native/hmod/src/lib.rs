@@ -192,6 +192,10 @@ impl Hooks for Mod {
         if !event.repeat && (catpack_ui::key_on_window(host, event.key) || catpack_ui::key_on_slot(event.screen, event.key)) { Flow::Cancel } else { Flow::Continue }
     }
 
+    fn render_hand(&self, host: &dyn ClientHost, event: &mut mod_api::RenderHandEvent<'_, '_>) -> Flow {
+        if catpack::render_hand(host, event) { Flow::Cancel } else { Flow::Continue }
+    }
+
     fn item_stacked_on_other(&self, context: &dyn mod_api::LoopContext, event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) -> Flow {
         match context.side() {
             mod_api::LoopSide::Server => catpack_rules::stacked_on_other(event),

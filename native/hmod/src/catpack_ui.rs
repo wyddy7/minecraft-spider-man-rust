@@ -366,10 +366,11 @@ impl mod_api::ItemPart for BagPart {
         use mod_api::text::{TextContent, TextStyle};
         let mut gray = TextStyle::default();
         gray.color = Some("gray".into());
-        let line = Text::new(TextContent::Keybind("key.sneak".into()))
-            .append(Text::literal(" + "))
+        let line = Text::literal("Press ")
+            .append(Text::new(TextContent::Keybind("key.sneak".into())))
+            .append(Text::literal("+"))
             .append(Text::new(TextContent::Keybind("key.use".into())))
-            .append(Text::literal(": wear"))
+            .append(Text::literal(" to wear"))
             .with_style(gray);
         event.lines.push((line, u32::MAX));
     }
@@ -396,7 +397,7 @@ pub fn draw_slot_label(host: &dyn ClientHost, draw: &mut dyn DrawContext, screen
         return;
     };
     let held = crate::catpack_rules::stored(host, &stack);
-    let hint = format!("Shift + {}: take off", key_name(host));
+    let hint = format!("Press Shift+{} to unwear", key_name(host));
     let grid = rows(&held) as f32 * CELL;
     let width = draw.text_width("Back catpack").max(draw.text_width(&hint)).max(if grid > 0.0 { 9.0 * CELL } else { 0.0 });
     let height = 22.0 + if grid > 0.0 { grid + 3.0 } else { 0.0 };
