@@ -24,8 +24,7 @@
 //!
 //! The bag is worn in a back slot of the mod's own and holds 27 stacks (both below).
 //!
-//! Not here yet: growing in chests and as a dropped item; a cell for the back slot in the
-//! inventory window.
+//! Not here yet: growing in chests and as a dropped item.
 
 use mod_api::{
     Compound, EntityInteractEvent, HostSide, InteractionResult, ItemStack, LivingRef, PlayerRef,
@@ -326,8 +325,10 @@ static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex:
 //
 // - **On**: sneak and use a bag in the hand (anywhere but on the top of a block when the bag
 //   holds a cat: that lets the cat out). A bag already on the back comes into the hand.
-// - **Off**: sneak and use an empty hand on nothing. The bag goes into the inventory; with no
-//   room there it stays on the back.
+// - **The slot**, beside the inventory: a click swaps the bag on the cursor with the worn one
+//   (either may be none); shift-click on a bag in the inventory wears it, the worn one taking its
+//   place; shift-click on the slot, or the window's Take off, puts the worn bag into the
+//   inventory, where with no room it stays on the back.
 // - **Death**: the bag drops where its wearer died, with all that is in it, unless the world
 //   keeps inventories.
 
@@ -453,6 +454,54 @@ fn take_off(host: &mut dyn ServerHost, player: PlayerRef) {
         return;
     }
     set_back(host, player, None);
+}
+
+/// The bag in `player`'s inventory slot `slot` goes onto their back; the one worn, if any, into
+/// that slot, and with `pick` the player's own game is told to pick that one up onto the cursor.
+fn wear_from(host: &mut dyn ServerHost, player: PlayerRef, slot: u32, pick: bool) {
+    if slot >= 36 {
+        return;
+    }
+    let Some((_, moved)) = player.inventory_slots(host).unwrap_or_default().into_iter().find(|(s, _)| *s == slot) else { return };
+    if bag(&moved).is_none() || moved.count() != 1 {
+        return;
+    }
+    close(host, player);
+    // The back first, the slot after, as putting on from the hand.
+    let before = back(host, player);
+    if !set_back(host, player, Some(moved)) {
+        return;
+    }
+    if player.set_inventory_slot(host, slot, before.clone()).is_err() {
+        set_back(host, player, before);
+    } else if pick && before.is_some() {
+        crate::catpack_net::tell(host, player, crate::catpack_net::message("pick", [("s", Tag::Int(slot as i32))]));
+    }
+}
+
+/// A click on the back slot of `player`'s inventory with nothing on the cursor: the worn bag
+/// comes off onto the cursor. The game gives a mod no way to put a stack on the cursor of the
+/// player's own inventory, so the bag goes into a free inventory slot and the player's own game
+/// is told to pick it up from there (`pick`), as a click of theirs would; where it can't (a
+/// creative inventory moves its stacks itself), the bag stays in that slot.
+fn slot_click(host: &mut dyn ServerHost, player: PlayerRef) {
+    let Some(worn) = back(host, player) else { return };
+    // The main inventory before the hotbar, so the bag doesn't flash in the hand.
+    let taken: Vec<u32> = player.inventory_slots(host).unwrap_or_default().into_iter().map(|(slot, _)| slot).collect();
+    let Some(free) = (9..36).chain(0..9).find(|slot| !taken.contains(slot)) else {
+        say(host, player, "No room to take the backpack off");
+        return;
+    };
+    close(host, player);
+    // Into the inventory first, off the back after.
+    if player.set_inventory_slot(host, free, Some(worn)).is_err() {
+        return;
+    }
+    if !set_back(host, player, None) {
+        let _ = player.set_inventory_slot(host, free, None);
+        return;
+    }
+    crate::catpack_net::tell(host, player, crate::catpack_net::message("pick", [("s", Tag::Int(free as i32))]));
 }
 
 /// Each server tick of a level: every couple of seconds everyone is told every back again (a
@@ -722,6 +771,8 @@ pub fn asked(message: Compound, context: &mut dyn mod_api::IPayloadContext) {
     };
     match (crate::catpack_net::kind(&message).as_str(), slot) {
         ("off", _) => take_off(host, player),
+        ("slot", _) => slot_click(host, player),
+        ("wear", Some(slot)) => wear_from(host, player, slot, matches!(message.get(&"c".into()), Some(Tag::Byte(1)))),
         ("open", _) => open(host, player, Source::Back),
         ("close", _) => close(host, player),
         ("put", Some(slot)) => {

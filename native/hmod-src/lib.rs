@@ -173,17 +173,22 @@ impl Hooks for Mod {
         Flow::Continue
     }
 
-    fn right_click_empty(&self, host: &mut dyn ClientHost, _event: &mut mod_api::RightClickEmptyEvent) {
-        catpack_ui::right_click_empty(host);
-    }
-
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
         catpack_ui::draw(host, event.draw, event.screen.mouse);
         catpack_ui::draw_slot(event.draw, event.screen);
     }
 
+    fn screen_mouse_button_released_pre(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonReleasedPreEvent<'_>) -> Flow {
+        // The back slot lies outside the inventory's panel, where letting go of a button throws
+        // what the cursor holds.
+        if catpack_ui::over_slot(event.screen) {
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
     fn screen_mouse_button_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonPressedPreEvent<'_>) -> Flow {
-        if catpack_ui::click(host, event.screen.mouse, event.button) || catpack_ui::click_slot(event.screen, event.button) {
+        if catpack_ui::click(host, event.screen.mouse, event.button) || catpack_ui::click_slot(host, event.screen, event.button) {
             event.cancelled = true;
         }
         Flow::Continue

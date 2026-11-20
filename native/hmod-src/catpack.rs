@@ -412,7 +412,8 @@ fn bag() -> ModelPart {
 const KEYS: [&str; 13] = [
     // The cat's size against the game's own model of it.
     "scale",
-    // How far the lid stands up from lying shut, in degrees.
+    // How far the lid swings from lying shut, in degrees: three quarters of a turn, over the
+    // wearer's shoulders and down flat against their back, out of the cat's way.
     "open",
     // The trunk's foot, inside the bag, and its lean out over the front wall.
     "body_at",
@@ -438,7 +439,7 @@ const KEYS: [&str; 13] = [
 /// over the wall, one a little further out (as the game's lying cat holds them).
 const CAT_POSE: [[f32; 3]; KEYS.len()] = [
     [0.6, 0.0, 0.0],
-    [104.0, 0.0, 0.0],
+    [270.0, 0.0, 0.0],
     [0.0, 4.0, 5.0],
     [6.0, 0.0, 0.0],
     [0.0, -0.5, 5.8],
@@ -455,7 +456,7 @@ const CAT_POSE: [[f32; 3]; KEYS.len()] = [
 /// The kitten's pose: the same seat, only its head over the wall.
 const KITTEN_POSE: [[f32; 3]; KEYS.len()] = [
     [0.5, 0.0, 0.0],
-    [104.0, 0.0, 0.0],
+    [270.0, 0.0, 0.0],
     [0.0, 3.0, 5.0],
     [6.0, 0.0, 0.0],
     [0.0, 0.2, 5.7],

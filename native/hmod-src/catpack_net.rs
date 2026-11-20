@@ -9,8 +9,13 @@
 //!     couple of seconds, so a player who joins or comes near catches up.
 //!   - `window`: the storage window, `open` or not, with what the bag (`items`) and the
 //!     player's inventory (`inv`) hold, each entry a slot `s` and a stack `i`.
+//!   - `pick`: pick up onto the cursor what is in inventory slot `s` (a bag taken off through
+//!     the back slot).
 //! - `spider_man:catpack_ask`, to the server:
 //!   - `off`: take my bag off my back; `open`: open the bag on my back;
+//!   - `slot`: I clicked my back slot with an empty cursor (the worn bag comes to the cursor);
+//!     `wear` (inventory slot `s`): put that bag on my back, the worn one into its place, and
+//!     with `c` tell me to pick that one up;
 //!   - `put` (inventory slot `s`) and `take` (bag slot `s`): move a stack in the open window;
 //!   - `close`: I closed the window.
 //!

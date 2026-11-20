@@ -186,8 +186,8 @@ DISPLAY = {
     "head": {"rotation": [0, 180, 0], "translation": [0, 8, 0], "scale": [1, 1, 1]},
     "thirdperson_righthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.5, 0.5, 0.5]},
     "thirdperson_lefthand": {"rotation": [75, 0, 0], "translation": [0, 2.5, 1], "scale": [0.5, 0.5, 0.5]},
-    "firstperson_righthand": {"rotation": [0, 150, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
-    "firstperson_lefthand": {"rotation": [0, 150, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
+    "firstperson_righthand": {"rotation": [0, -30, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
+    "firstperson_lefthand": {"rotation": [0, 30, 0], "translation": [1, 2, -1], "scale": [0.6, 0.6, 0.6]},
 }
 
 
