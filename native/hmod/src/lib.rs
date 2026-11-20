@@ -70,6 +70,8 @@ impl Hooks for Mod {
         }
         r.register_key_mapping(KeyRegistration::new(catpack_ui::KEY, "key.keyboard.g").label("Back catpack"));
         catpack_net::register(r);
+        let bag = r.item_key(catpack::ITEM);
+        r.item_part(bag, catpack_ui::BagPart);
         let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
         let _ = r.register_setting(delay);
@@ -175,7 +177,7 @@ impl Hooks for Mod {
 
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
         catpack_ui::draw(host, event.draw, event.screen.mouse);
-        catpack_ui::draw_slot_label(event.draw, event.screen);
+        catpack_ui::draw_slot_label(host, event.draw, event.screen);
     }
 
     fn screen_render_background(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenRenderBackgroundEvent<'_>) {

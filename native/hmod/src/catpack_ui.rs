@@ -323,12 +323,95 @@ pub fn draw_slot(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
     }
 }
 
-/// The back slot's name, over everything, while the mouse is on it.
-pub fn draw_slot_label(draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
-    let Some([x, y]) = back_slot(screen) else { return };
-    if over([x, y, CELL, CELL], screen.mouse) {
-        draw.text(if lock(&MINE).is_some() { "Back catpack" } else { "Back" }, [x, y - 12.0], 0xFFFF_FFFF, true);
+/// A slot's well with what it holds, as the game draws its own.
+fn draw_cell(draw: &mut dyn DrawContext, [x, y]: [f32; 2], stack: Option<&ItemStack>) {
+    draw.fill([x, y, CELL, CELL], 0xFF37_3737);
+    draw.fill([x + 1.0, y + 1.0, CELL - 1.0, CELL - 1.0], 0xFFFF_FFFF);
+    draw.fill([x + 1.0, y + 1.0, CELL - 2.0, CELL - 2.0], 0xFF8B_8B8B);
+    if let Some(stack) = stack {
+        draw.gui_draw_item_with(stack, [x + 1.0, y + 1.0], Some(""));
+        if stack.count() > 1 {
+            let count = stack.count().to_string();
+            draw.text(&count, [x + 17.0 - draw.text_width(&count), y + 9.0], 0xFFFF_FFFF, true);
+        }
     }
+}
+
+/// How many rows of nine show all of what a bag holds: none for an empty one.
+fn rows(held: &[(usize, ItemStack)]) -> usize {
+    held.iter().map(|(slot, _)| slot / 9 + 1).max().unwrap_or(0)
+}
+
+/// What a bag holds, as its cells: the rows in use, nine to a row, from `at`.
+fn draw_held(draw: &mut dyn DrawContext, held: &[(usize, ItemStack)], at: [f32; 2]) {
+    for i in 0..rows(held) * 9 {
+        let stack = held.iter().find(|(slot, _)| *slot == i).map(|(_, stack)| stack);
+        draw_cell(draw, [at[0] + (i % 9) as f32 * CELL, at[1] + (i / 9) as f32 * CELL], stack);
+    }
+}
+
+/// The bag's key as Controls names it, short: `G`.
+fn key_name(host: &dyn ClientHost) -> String {
+    let bound = host.mod_key(MOD, KEY).map_or_else(|| "key.keyboard.g".to_string(), |(key, _)| key);
+    bound.rsplit('.').next().unwrap_or("g").to_uppercase()
+}
+
+/// The bag as an item: its tooltip says how to put it on and shows what it holds as cells.
+pub struct BagPart;
+
+#[mod_api::horizon_part]
+impl mod_api::ItemPart for BagPart {
+    fn tooltip(&self, _host: &dyn ClientHost, event: &mut mod_api::TooltipEvent<'_>) {
+        use mod_api::Text;
+        use mod_api::text::{TextContent, TextStyle};
+        let mut gray = TextStyle::default();
+        gray.color = Some("gray".into());
+        let line = Text::new(TextContent::Keybind("key.sneak".into()))
+            .append(Text::literal(" + "))
+            .append(Text::new(TextContent::Keybind("key.use".into())))
+            .append(Text::literal(": wear"))
+            .with_style(gray);
+        event.lines.push((line, u32::MAX));
+    }
+
+    fn tooltip_component(&self, host: &dyn ClientHost, event: &mut mod_api::TooltipComponentEvent<'_>) -> Option<[f32; 2]> {
+        let rows = rows(&crate::catpack_rules::stored(host, event.stack));
+        (rows > 0).then(|| [9.0 * CELL, rows as f32 * CELL + 2.0])
+    }
+
+    fn tooltip_component_draw(&self, host: &dyn ClientHost, event: &mut mod_api::TooltipComponentDrawEvent<'_>) {
+        draw_held(event.draw, &crate::catpack_rules::stored(host, event.stack), event.origin);
+    }
+}
+
+/// The back slot's tooltip, over everything, while the mouse is on it: the worn bag's name, how
+/// to take it off, and what it holds; an empty slot says what it is for.
+pub fn draw_slot_label(host: &dyn ClientHost, draw: &mut dyn DrawContext, screen: &mod_api::ScreenView<'_>) {
+    let Some([x, y]) = back_slot(screen) else { return };
+    if !over([x, y, CELL, CELL], screen.mouse) {
+        return;
+    }
+    let Some(stack) = lock(&MINE).clone() else {
+        draw.text("Back", [x, y - 12.0], 0xFFFF_FFFF, true);
+        return;
+    };
+    let held = crate::catpack_rules::stored(host, &stack);
+    let hint = format!("Shift + {}: take off", key_name(host));
+    let grid = rows(&held) as f32 * CELL;
+    let width = draw.text_width("Back catpack").max(draw.text_width(&hint)).max(if grid > 0.0 { 9.0 * CELL } else { 0.0 });
+    let height = 22.0 + if grid > 0.0 { grid + 3.0 } else { 0.0 };
+    // Beside the mouse, kept on the screen; the game's own tooltip colours.
+    let size = draw.size();
+    let left = (screen.mouse[0] + 12.0).min(size[0] - width - 6.0).max(4.0);
+    let top = (screen.mouse[1] - 12.0).min(size[1] - height - 6.0).max(4.0);
+    draw.fill([left - 4.0, top - 4.0, width + 8.0, height + 8.0], 0xF010_0010);
+    draw.fill([left - 4.0, top - 4.0, width + 8.0, 1.0], 0x5050_00FF);
+    draw.fill([left - 4.0, top + height + 3.0, width + 8.0, 1.0], 0x5028_007F);
+    draw.fill([left - 4.0, top - 4.0, 1.0, height + 8.0], 0x5050_00FF);
+    draw.fill([left + width + 3.0, top - 4.0, 1.0, height + 8.0], 0x5028_007F);
+    draw.text("Back catpack", [left, top], 0xFFFF_FFFF, true);
+    draw.text(&hint, [left, top + 12.0], 0xFFAA_AAAA, true);
+    draw_held(draw, &held, [left, top + 25.0]);
 }
 
 /// This game's own answer to a pickup click (`item_stacked_on_other` on the client): the click

@@ -517,6 +517,26 @@ fn quick_off(host: &mut dyn ServerHost, player: PlayerRef) {
     }
 }
 
+/// What the bag `stack` holds, each stack with its slot: for either side to show.
+pub fn stored(host: &dyn mod_api::Host, stack: &ItemStack) -> Vec<(usize, ItemStack)> {
+    let custom = match bag(stack) {
+        Some(Bag::Empty(c) | Bag::Holding(c)) => c,
+        None => return Vec::new(),
+    };
+    let Some(Tag::List(list)) = custom.get(&"catpack_items".into()) else { return Vec::new() };
+    let mut out = Vec::new();
+    for entry in list {
+        let Tag::Compound(entry) = entry else { continue };
+        let (Some(Tag::Byte(slot)), Some(Tag::Compound(saved))) = (entry.get(&"s".into()), entry.get(&"i".into())) else { continue };
+        if let (Ok(slot), Some(held)) = (usize::try_from(*slot), ItemStack::from_nbt(host, saved))
+            && slot < SLOTS
+        {
+            out.push((slot, held));
+        }
+    }
+    out
+}
+
 /// Whether the stack is a cat backpack.
 pub fn is_bag(stack: &ItemStack) -> bool {
     bag(stack).is_some()
