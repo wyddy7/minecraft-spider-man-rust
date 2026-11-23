@@ -227,6 +227,11 @@ impl Hooks for Mod {
         Flow::Continue
     }
 
+    /// A dropped cat backpack never despawns.
+    fn item_expire(&self, _host: &mut dyn mod_api::ServerHost, event: &mut mod_api::ItemExpireEvent<'_>) {
+        catpack_rules::item_expire(event);
+    }
+
     fn living_death(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::LivingDeathEvent<'_>) -> Flow {
         catpack_rules::living_death(host, event);
         Flow::Continue

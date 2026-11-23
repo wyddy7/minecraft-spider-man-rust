@@ -8,7 +8,8 @@
 - The bag is worn in a back slot beside the inventory (the chest slot stays free): sneak and use it, click the
   slot with it, or shift-click it; G opens it (27 slots), Shift+G takes it off. Its tooltip shows what it holds.
 - The cat looks around, kneads and breathes, hides in the bag when its carrier is hurt, and is alive in a hand
-  too. A bag does not burn, drops with its cat when its wearer dies, and stays on with `keep_inventory`.
+  too. A bag does not burn, drops with its cat when its wearer dies, and stays on with `keep_inventory`. A bag
+  on the ground never despawns, so a cat dropped at death or thrown away waits for you.
 - Back catpack is single player only for now: it works in your own world; servers and guests of a LAN world
   come later.
 - Camera distance: a slider on the mod's page (Options > Mods > Spider-Man > Config, 2 to 12 blocks, 6 as
