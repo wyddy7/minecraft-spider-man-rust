@@ -9,6 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mod_api::{ClientHost, Flow, Hooks, KeyRegistration, Registrar, RegistrationContext, SettingSpec};
 
+pub mod catpack;
+pub mod catpack_net;
+pub mod catpack_rules;
+pub mod catpack_ui;
+
 /// The mod's keys: id, the label Controls shows, the default key.
 pub const KEYS: [(&str, &str, &str); 2] = [
     ("web", "Web swing", "key.keyboard.r"),
@@ -18,6 +23,15 @@ pub const KEYS: [(&str, &str, &str); 2] = [
 pub const COMMANDS: [&str; 1] = ["swingmode"];
 /// The web delay row on the mod's page in Options > Mods.
 const WEB_DELAY: &str = "web_delay";
+/// The camera distance row: the web mode's chase camera on the ground, in blocks.
+const CAMERA: &str = "camera_distance";
+/// The row that puts the others back to their defaults, then turns itself off.
+const RESET: &str = "reset";
+/// The defaults: half the reference web flight (the mod's own default since 0.1), the camera 6 blocks back.
+const DEFAULT_WEB_DELAY: f64 = 0.5;
+const DEFAULT_CAMERA: f64 = 6.0;
+/// The mod's id, as its settings are kept under.
+const MOD_ID: &str = "spider_man";
 
 /// Whether the player is in their own world (single player or a LAN world they host), as of the
 /// game-side tick: only there does the mod take its commands.
@@ -54,9 +68,26 @@ impl Hooks for Mod {
         for (id, label, key) in KEYS {
             r.register_key_mapping(KeyRegistration::new(id, key).label(label));
         }
-        let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, 1.0)
+        r.register_key_mapping(KeyRegistration::new(catpack_ui::KEY, "key.keyboard.g").label("Back catpack"));
+        catpack_net::register(r);
+        let bag = r.item_key(catpack::ITEM);
+        r.item_part(bag, catpack_ui::BagPart);
+        let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
         let _ = r.register_setting(delay);
+        let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, DEFAULT_CAMERA)
+            .tooltip("How far behind the player the camera stays in web mode, in blocks; it backs off a little more in flight.");
+        let _ = r.register_setting(camera);
+        // The page has no button row, so the reset is a row with one thing to click: it reads
+        // "click here", does its work on the click and reads "done" until the page is opened again.
+        let reset = SettingSpec::choice(RESET, "Reset all to defaults", ["click here", "done"], 0)
+            .tooltip("Click to put every setting above back to its default.");
+        let _ = r.register_setting(reset);
+    }
+
+    /// The mod's own items: the cat backpack.
+    fn items(&self, _cx: &RegistrationContext, event: &mut mod_api::ItemsEvent<'_>) {
+        event.items.push(catpack::item());
     }
 
     /// The chat box lists, colours and completes the mod's commands.
@@ -67,11 +98,48 @@ impl Hooks for Mod {
     ) {
         event.commands.push(mod_api::Command::new("swingmode"));
         event.commands.push(mod_api::Command::new("swingmode <args:text>"));
+        event.commands.push(mod_api::Command::new("catpack"));
+        event.commands.push(mod_api::Command::new("catpack <args:text>"));
+    }
+
+    /// The kitten's model is baked once, when the client has started.
+    fn client_setup(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientSetupEvent) {
+        catpack::bake(host);
+    }
+
+    /// Which cat backpack the local player wears, from their chest slot.
+    fn client_tick_post(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientTickPostEvent) {
+        catpack::tick(host);
+        catpack_ui::tick(host);
+    }
+
+    /// The cat backpack draws over both player models.
+    fn register_entity_layers(
+        &self,
+        _context: &RegistrationContext,
+        event: &mut mod_api::RegisterEntityLayersEvent<'_>,
+    ) {
+        catpack::register_layers(event);
     }
 
     /// `/swingmode …` goes to the mod, not the server, in the player's own world only; elsewhere
     /// the server gets it as always.
-    fn command(&self, _host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
+    fn command(&self, host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
+        if let Some(args) = event.command.trim().strip_prefix("catpack")
+            && (args.is_empty() || args.starts_with(' '))
+        {
+            let line = match catpack::command(args) {
+                catpack::Command::Say(line) => line,
+                catpack::Command::Send(lines, line) => {
+                    for l in lines {
+                        let _ = host.send_chat(&l);
+                    }
+                    line
+                }
+            };
+            let _ = host.chat_line(mod_api::Text::literal(line));
+            return Flow::Cancel;
+        }
         if !is_command(event.command) || !OWN_WORLD.load(Ordering::Relaxed) {
             return Flow::Continue;
         }
@@ -83,6 +151,81 @@ impl Hooks for Mod {
 
     /// A landing on the own world's server while the owner's web holds (`fall_gate`): no fall
     /// damage, as under Slow Falling, so a web shot after a long drop lands softly.
+    fn entity_interact(&self, host: mod_api::HostSide, event: &mut mod_api::EntityInteractEvent<'_>) -> Option<mod_api::InteractionResult> {
+        catpack_rules::entity_interact(host, event)
+    }
+
+    fn use_item_on_block(&self, host: mod_api::HostSide, event: &mut mod_api::UseItemOnBlockEvent<'_>) -> Flow {
+        if let Some(result) = catpack_rules::use_item_on_block(host, event) {
+            *event.cancellation_result = result;
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
+    fn level_tick_post(&self, host: mod_api::HostSide, event: &mut mod_api::LevelTickPostEvent) {
+        catpack_rules::level_tick(host, event);
+    }
+
+    fn right_click_item(&self, host: mod_api::HostSide, event: &mut mod_api::RightClickItemEvent<'_>) -> Flow {
+        if catpack_rules::right_click_item(host, event) {
+            *event.cancellation_result = mod_api::InteractionResult::Consume;
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
+    fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
+        catpack_ui::draw(host, event.draw, event.screen.mouse);
+        catpack_ui::draw_slot_label(host, event.draw, event.screen);
+    }
+
+    fn screen_render_background(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenRenderBackgroundEvent<'_>) {
+        catpack_ui::draw_slot(event.draw, event.screen);
+    }
+
+    fn item_toss(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::ItemTossEvent) -> Flow {
+        if catpack_rules::item_toss(host, event) { Flow::Cancel } else { Flow::Continue }
+    }
+
+    fn screen_key_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenKeyPressedPreEvent<'_>) -> Flow {
+        if !event.repeat && (catpack_ui::key_on_window(host, event.key) || catpack_ui::key_on_slot(event.screen, event.key)) { Flow::Cancel } else { Flow::Continue }
+    }
+
+    fn render_hand(&self, host: &dyn ClientHost, event: &mut mod_api::RenderHandEvent<'_, '_>) -> Flow {
+        if catpack::render_hand(host, event) { Flow::Cancel } else { Flow::Continue }
+    }
+
+    fn item_stacked_on_other(&self, context: &dyn mod_api::LoopContext, event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) -> Flow {
+        match context.side() {
+            mod_api::LoopSide::Server => catpack_rules::stacked_on_other(event),
+            mod_api::LoopSide::Client => catpack_ui::stacked_on_other(event),
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    fn screen_mouse_button_released_pre(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonReleasedPreEvent<'_>) -> Flow {
+        // The back slot lies outside the inventory's panel, where letting go of a button throws
+        // what the cursor holds.
+        if catpack_ui::swallows_release(event.screen) {
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
+    fn screen_mouse_button_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonPressedPreEvent<'_>) -> Flow {
+        if catpack_ui::click(host, event.screen.mouse, event.button) || catpack_ui::click_slot(host, event.screen, event.button) {
+            event.cancelled = true;
+        }
+        Flow::Continue
+    }
+
+    fn living_death(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::LivingDeathEvent<'_>) -> Flow {
+        catpack_rules::living_death(host, event);
+        Flow::Continue
+    }
+
     fn living_fall(&self, _cx: &dyn mod_api::LoopContext, event: &mut mod_api::LivingFallEvent<'_>) -> Flow {
         if fall_gate::forget(event.entity) {
             event.distance = 0.0;
@@ -91,16 +234,32 @@ impl Hooks for Mod {
         Flow::Continue
     }
 
-    /// The web delay row changed: the mod takes it as a quiet `/swingmode delay`, which keeps it.
+    /// A row changed (web delay, camera distance): the mod takes it as a quiet `/swingmode delay` or
+    /// `/swingmode camera`, which keeps it. The reset row, clicked, writes both defaults back (the rows
+    /// show them the next time the page opens) and is ready to be clicked again.
     /// Only the last of several steps (a drag, or changes on the title screen) is taken.
     fn setting_changed(&self, host: &mut dyn ClientHost, event: &mut mod_api::SettingChangedEvent<'_>) {
-        if event.key != WEB_DELAY {
+        if event.key == RESET {
+            if host.setting_choice(RESET) == Some(1) {
+                host.set_setting(MOD_ID, WEB_DELAY, &DEFAULT_WEB_DELAY.to_string());
+                host.set_setting(MOD_ID, CAMERA, &DEFAULT_CAMERA.to_string());
+                host.set_setting(MOD_ID, RESET, "0");
+                let mut ran = ran();
+                ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
+                ran.push(("swingmode".into(), format!("delay {DEFAULT_WEB_DELAY:.2} quiet")));
+                ran.push(("swingmode".into(), format!("camera {DEFAULT_CAMERA:.2} quiet")));
+            }
             return;
         }
-        if let Some(delay) = host.setting_f64(WEB_DELAY).filter(|d| d.is_finite()) {
+        let command = match event.key {
+            WEB_DELAY => "delay",
+            CAMERA => "camera",
+            _ => return,
+        };
+        if let Some(value) = host.setting_f64(event.key).filter(|v| v.is_finite()) {
             let mut ran = ran();
-            ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
-            ran.push(("swingmode".into(), format!("delay {delay:.2} quiet")));
+            ran.retain(|(name, args)| !(name == "swingmode" && args.starts_with(command) && args.ends_with(" quiet")));
+            ran.push(("swingmode".into(), format!("{command} {value:.2} quiet")));
         }
     }
 }

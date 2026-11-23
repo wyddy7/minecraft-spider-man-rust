@@ -1,0 +1,34 @@
+{
+ "model": {
+  "type": "minecraft:select",
+  "property": "minecraft:context_entity_type",
+  "cases": [
+   {
+    "when": "minecraft:player",
+    "model": {
+     "type": "minecraft:select",
+     "property": "minecraft:display_context",
+     "cases": [
+      {
+       "when": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand"
+       ],
+       "model": {
+        "type": "minecraft:empty"
+       }
+      }
+     ],
+     "fallback": {
+      "type": "minecraft:model",
+      "model": "spider_man:item/catpack_kitten_red"
+     }
+    }
+   }
+  ],
+  "fallback": {
+   "type": "minecraft:model",
+   "model": "spider_man:item/catpack_kitten_red"
+  }
+ }
+}

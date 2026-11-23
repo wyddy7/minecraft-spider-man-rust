@@ -53,4 +53,5 @@ How an agent works on this mod. The README says what it is and how to build it.
 - Public repo: no personal details, private paths or quotes in code, commits or docs. Comments say what and why
   in neutral terms.
 - No code, models or animations from other mods or games; watch references, write our own.
+- Before any model, texture or pose: `docs/model-style.md` (the style rules and how a model is checked in the game).
 - Nothing that changes what a server sees beyond the `motion` capability's own rules.

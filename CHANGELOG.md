@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Back catpack: a backpack that carries your cat. Craft it (leather, string, a chest) or take it from the
+  mod's creative tab. Use it on your own tamed cat and the cat rides in it, a kitten grows there, and sneak-use
+  on top of a block sets the same cat down there, as a bucket empties, with its name, collar and owner.
+- The bag is worn in a back slot beside the inventory (the chest slot stays free): sneak and use it, click the
+  slot with it, or shift-click it; G opens it (27 slots), Shift+G takes it off. Its tooltip shows what it holds.
+- The cat looks around, kneads and breathes, hides in the bag when its carrier is hurt, and is alive in a hand
+  too. A bag does not burn, drops with its cat when its wearer dies, and stays on with `keep_inventory`.
+- Back catpack is single player only for now: it works in your own world; servers and guests of a LAN world
+  come later.
+- Camera distance: a slider on the mod's page (Options > Mods > Spider-Man > Config, 2 to 12 blocks, 6 as
+  before) and `/swingmode camera`; in flight the camera still backs off 2 blocks more.
+- "Reset all to defaults" on the mod's page puts the web delay and the camera distance back (the rows show it the
+  next time the page opens).
+- The web delay row's default is 0.5 again, the mod's own default (0.2.5's row said 1).
+- `/swingmode view` takes an angle from behind, a distance and a height: `/swingmode view 45 2.5 1.4` looks at
+  the player from behind and to the right, close up, for checking poses and what the player wears.
+
 ## 0.2.5 — 2026-11-18
 
 - A `.hmod`, the native mod format of launchers 0.2.70 and later, which no longer load `.hnmod`. On Horizon's

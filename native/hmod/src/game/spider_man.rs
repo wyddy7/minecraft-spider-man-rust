@@ -3862,6 +3862,9 @@ pub mod spiderman {
     const CHASE_EASE: f64 = 0.08;
     const CHASE_HEIGHT: f32 = 1.0;
     const VIEW_DISTANCE: f64 = 5.0;
+    /// The range of the camera distance setting, in blocks.
+    const CAMERA_MIN: f64 = 2.0;
+    const CAMERA_MAX: f64 = 12.0;
 
     /// Where the cables pull on the body: about the chest, above the feet.
     const CHEST: f64 = 1.1;
@@ -3919,6 +3922,9 @@ pub mod spiderman {
         /// camera's distance now.
         view: Option<motion::Camera>,
         chase: f64,
+        /// The chase camera's distance on the ground, from the settings (`/swingmode camera`); in
+        /// flight it backs off by as much again as the default does.
+        camera: f64,
         /// The `web` mode, built to the reference gameplay.
         spidey: spidey::Spidey,
         /// The rays asked of the game, and this tick's view from them.
@@ -4034,6 +4040,11 @@ pub mod spiderman {
                         }
                     }
                     Some(("hint", v)) => self.hint_done = v.trim() == "done",
+                    Some(("camera", v)) => {
+                        if let Ok(d) = v.trim().parse::<f64>() {
+                            self.camera = d.clamp(CAMERA_MIN, CAMERA_MAX);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -4041,9 +4052,10 @@ pub mod spiderman {
 
         fn save_settings(&self) {
             let text = format!(
-                "delay={}\nhint={}\n",
+                "delay={}\nhint={}\ncamera={}\n",
                 self.spidey.web_delay,
-                if self.hint_done { "done" } else { "show" }
+                if self.hint_done { "done" } else { "show" },
+                self.camera
             );
             if let Err(e) = storage::set(SETTINGS, text.as_bytes()) {
                 crate::game::spider_man::horizon_mod_sdk::log::write(crate::game::spider_man::horizon_mod_sdk::log::Level::Warn, &e);
@@ -4119,6 +4131,7 @@ pub mod spiderman {
                     sense: None,
                     view: None,
                     chase: CHASE_GROUND,
+                    camera: CHASE_GROUND,
                 },
                 Registration::new().command("swingmode").on_tick(),
             ))
@@ -4151,7 +4164,7 @@ pub mod spiderman {
             let chest = P::new(player.x, player.y + CHEST, player.z);
             // The camera: a fixed view if one is set, else in web mode a chase
             // camera that backs off in flight.
-            let target = if self.spidey.driving { CHASE_FLY } else { CHASE_GROUND };
+            let target = if self.spidey.driving { self.camera + (CHASE_FLY - CHASE_GROUND) } else { self.camera };
             self.chase += (target - self.chase) * CHASE_EASE;
             // The rumble grows with speed: none below ~20 m/s, full at ~35.
             let speed = P::of(&state.velocity).len();
@@ -4238,29 +4251,71 @@ pub mod spiderman {
 
         fn command(&mut self, _name: &str, args: &str) -> Result<Option<String>, String> {
             if let Some(rest) = args.trim().strip_prefix("view") {
-                // A fixed camera beside the player, for checking poses.
+                // A fixed camera round the player, for checking poses and what the player wears:
+                // `side|front|back` or an angle from behind (degrees, 90 = the right side), then
+                // optionally the distance and the height above the feet it looks at, in blocks.
                 let Some(p) = game::get_player() else {
                     return Err("No player".into());
                 };
-                let chest = P::new(p.x, p.y + 1.0, p.z);
-                let yaw = f64::from(p.yaw).to_radians();
-                let ahead = P::new(-yaw.sin(), 0.0, yaw.cos());
-                let right = ahead.cross(UP).norm();
-                let at = match rest.trim() {
-                    "side" | "" => chest + right * VIEW_DISTANCE,
-                    "front" => chest + ahead * VIEW_DISTANCE,
-                    "back" => chest - ahead * VIEW_DISTANCE,
-                    "off" => {
+                let mut words = rest.split_whitespace();
+                let angle = match words.next() {
+                    Some("off") => {
                         self.view = None;
                         return Ok(Some("View off".into()));
                     }
-                    other => return Err(format!("/swingmode view side|front|back|off, not {other}")),
+                    Some("side") | None => 90.0,
+                    Some("front") => 180.0,
+                    Some("back") => 0.0,
+                    Some(a) => a
+                        .parse::<f64>()
+                        .map_err(|_| format!("/swingmode view side|front|back|<degrees> [distance] [height] | off, not {a}"))?,
                 };
+                let number = |w: Option<&str>, name: &str, range: std::ops::RangeInclusive<f64>, default: f64| {
+                    w.map_or(Ok(default), |w| {
+                        w.parse::<f64>()
+                            .ok()
+                            .filter(|v| range.contains(v))
+                            .ok_or_else(|| format!("/swingmode view: {name} {range:?}, not {w}"))
+                    })
+                };
+                let distance = number(words.next(), "distance", 0.5..=20.0, VIEW_DISTANCE)?;
+                let height = number(words.next(), "height", 0.0..=3.0, 1.0)?;
+                let target = P::new(p.x, p.y + height, p.z);
+                let yaw = f64::from(p.yaw).to_radians();
+                let ahead = P::new(-yaw.sin(), 0.0, yaw.cos());
+                let right = ahead.cross(UP).norm();
+                let a = angle.to_radians();
+                let at = target - ahead * (distance * a.cos()) + right * (distance * a.sin());
                 self.view = Some(motion::Camera::Fixed(motion::FixedCamera {
                     at: at.wit(),
-                    look_at: chest.wit(),
+                    look_at: target.wit(),
                 }));
-                return Ok(Some("Fixed view on: /swingmode view off".into()));
+                return Ok(Some(format!(
+                    "Fixed view at {angle:.0}°, {distance:.1} blocks, looking at {height:.1}: /swingmode view off"
+                )));
+            }
+            if let Some(rest) = args.trim().strip_prefix("camera") {
+                // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
+                let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
+                    Some(r) => (r.trim(), true),
+                    None => (rest.trim(), false),
+                };
+                if !rest.is_empty() {
+                    let d: f64 = rest
+                        .parse()
+                        .ok()
+                        .filter(|d: &f64| (CAMERA_MIN..=CAMERA_MAX).contains(d))
+                        .ok_or_else(|| format!("/swingmode camera {CAMERA_MIN}..{CAMERA_MAX} (blocks), not {rest}"))?;
+                    self.camera = d;
+                    self.save_settings();
+                    if quiet {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(format!(
+                    "Camera distance: {:.1} blocks (/swingmode camera {CAMERA_MIN}..{CAMERA_MAX})",
+                    self.camera
+                )));
             }
             if args.trim() == "debug" {
                 let st = self.sense.as_ref();
@@ -4306,18 +4361,18 @@ pub mod spiderman {
                     self.spidey.web_delay
                 )));
             }
-            // The commands mirror the settings (`delay`) plus ones with no
+            // The commands mirror the settings (`delay`, `camera`) plus ones with no
             // button (`view`, `pose`, `debug`); `on`/`off` switch the mod.
             self.mode = match args.trim() {
                 "on" | "web" => Mode::Web,
                 "off" => Mode::Off,
                 "" => {
                     return Ok(Some(
-                        "/swingmode on|off · delay 0..2 · view side|front|back|off · debug"
+                        "/swingmode on|off · delay 0..2 · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
                             .into(),
                     ));
                 }
-                other => return Err(format!("/swingmode on|off|delay|view|debug, not {other}")),
+                other => return Err(format!("/swingmode on|off|delay|camera|view|debug, not {other}")),
             };
             self.last_chest = None;
             self.spidey.reset();

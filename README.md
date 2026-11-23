@@ -50,6 +50,18 @@ Options > Mods > Spider-Man > Config (R and Z also in Controls). The Mods page t
 It plays in single player and in a LAN world you host. On someone else's server it does nothing: it only moves the
 player where the server is yours. A city map makes the most of it; for the look, any Spider-Man skin.
 
+## Back catpack
+
+A backpack that carries your cat. **Single player only for now:** it works in your own world; on a server and
+for a guest of a LAN world it is not there yet.
+
+- Craft it from leather, string and a chest, or take it from the mod's creative tab.
+- Use it on your own tamed cat and the cat rides in it. A kitten grows there.
+- Sneak and use the bag on top of a block to set the same cat down, as a bucket empties.
+- Sneak and use the bag in the air to wear it. It sits in a back slot beside the inventory, so the chest slot stays
+  free. **G** opens the worn bag (27 slots), **Shift+G** takes it off.
+- The bag does not burn and drops with its cat when its wearer dies.
+
 ## Status
 
 0.2.5: the native build has everything above, as a `.hmod` on Horizon's Nightly of 2026-11-18 (launcher 0.2.70 or later). Multiplayer on servers is the
