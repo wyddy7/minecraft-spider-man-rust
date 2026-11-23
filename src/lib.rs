@@ -173,6 +173,8 @@ struct Swing {
     now: u64,
     last_panel: Vec<String>,
     /// Test speedometer (blocks per tick): the speed now, the top of this flight, the best since the game started.
+    /// The speedometer in the corner, `/swingmode speedo on|off` (off at start).
+    speedo: bool,
     speed_now: f64,
     speed_flight: f64,
     speed_best: f64,
@@ -366,8 +368,8 @@ impl Swing {
         } else {
             Vec::new()
         };
-        // Test speedometer, in blocks per second (= m/s): the cap shows the long-flight raise.
-        if active && self.mode == Mode::Web {
+        // The speedometer, in blocks per second (= m/s): the cap shows the long-flight raise.
+        if active && self.mode == Mode::Web && self.speedo {
             let cap = self.spidey.speed_cap();
             let extra = (cap / web::MAX_SPEED - 1.0) * 100.0;
             lines.push(format!("Speed {:.0} m/s   flight max {:.0}   best {:.0}", self.speed_now * 20.0, self.speed_flight * 20.0, self.speed_best * 20.0));
@@ -401,6 +403,7 @@ impl Mod for Swing {
                 last_chest: None,
                 now: 100,
                 last_panel: Vec::new(),
+                speedo: false,
                 speed_now: 0.0,
                 speed_flight: 0.0,
                 speed_best: 0.0,
@@ -627,6 +630,15 @@ impl Mod for Swing {
             self.spidey.set_debug_pose(rest.trim())?;
             return Ok(Some(format!("Pose held: {}", rest.trim())));
         }
+        if let Some(rest) = args.trim().strip_prefix("speedo") {
+            match rest.trim() {
+                "on" => self.speedo = true,
+                "off" => self.speedo = false,
+                "" => self.speedo = !self.speedo,
+                other => return Err(format!("/swingmode speedo on|off, not {other}")),
+            }
+            return Ok(Some(format!("Speedometer: {} (/swingmode speedo on|off)", if self.speedo { "on" } else { "off" })));
+        }
         if let Some(rest) = args.trim().strip_prefix("speed") {
             // A long flight's raise of the speed cap, in percent; `quiet` from the mod's row in Options > Mods.
             let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
@@ -681,11 +693,11 @@ impl Mod for Swing {
             "off" => Mode::Off,
             "" => {
                 return Ok(Some(
-                    "/swingmode on|off · delay 0..2 · speed 0..200 · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
+                    "/swingmode on|off · delay 0..2 · speed 0..200 · speedo · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
                         .into(),
                 ));
             }
-            other => return Err(format!("/swingmode on|off|delay|speed|camera|view|debug, not {other}")),
+            other => return Err(format!("/swingmode on|off|delay|speed|speedo|camera|view|debug, not {other}")),
         };
         self.last_chest = None;
         self.spidey.reset();
