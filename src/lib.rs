@@ -151,6 +151,12 @@ mod web {
     pub const RELEASE_UP: f64 = 0.26;
     pub const RELEASE_UP_FALLING: f64 = 0.12;
     pub const MAX_SPEED: f64 = 2.2;
+    /// A long flight lets the speed past `MAX_SPEED`: after `LONG_FLIGHT_START` ticks in the air with the
+    /// mod driving, the cap rises over `LONG_FLIGHT_RAMP` ticks to `LONG_FLIGHT_EXTRA` more (+30 %). The pull
+    /// itself is unchanged, so only a flight that keeps its speed gets there; touching the ground resets it.
+    pub const LONG_FLIGHT_START: u32 = 60;
+    pub const LONG_FLIGHT_RAMP: u32 = 100;
+    pub const LONG_FLIGHT_EXTRA: f64 = 0.3;
     pub const COLOR: u32 = 0xEE_EEEE;
 }
 
