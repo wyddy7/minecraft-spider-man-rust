@@ -1062,8 +1062,13 @@ impl Spidey {
         motion::clear_pose();
     }
 
+    /// Ticks in the air in a row with the mod driving.
+    pub fn airborne(&self) -> u32 {
+        self.airborne
+    }
+
     /// The speed cap: `MAX_SPEED`, raised by up to `LONG_FLIGHT_EXTRA` in a long flight.
-    fn speed_cap(&self) -> f64 {
+    pub fn speed_cap(&self) -> f64 {
         let ramp = self.airborne.saturating_sub(web::LONG_FLIGHT_START) as f64 / web::LONG_FLIGHT_RAMP as f64;
         web::MAX_SPEED * (1.0 + web::LONG_FLIGHT_EXTRA * ramp.min(1.0))
     }

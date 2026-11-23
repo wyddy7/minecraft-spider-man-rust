@@ -3026,8 +3026,13 @@ pub mod spiderman {
                 motion::clear_pose();
             }
 
+            /// Ticks in the air in a row with the mod driving.
+            pub fn airborne(&self) -> u32 {
+                self.airborne
+            }
+
             /// The speed cap: `MAX_SPEED`, raised by up to `LONG_FLIGHT_EXTRA` in a long flight.
-            fn speed_cap(&self) -> f64 {
+            pub fn speed_cap(&self) -> f64 {
                 let ramp = self.airborne.saturating_sub(web::LONG_FLIGHT_START) as f64 / web::LONG_FLIGHT_RAMP as f64;
                 web::MAX_SPEED * (1.0 + web::LONG_FLIGHT_EXTRA * ramp.min(1.0))
             }
@@ -3927,6 +3932,10 @@ pub mod spiderman {
         last_chest: Option<P>,
         now: u64,
         last_panel: Vec<String>,
+        /// Test speedometer (blocks per tick): the speed now, the top of this flight, the best since the game started.
+        speed_now: f64,
+        speed_flight: f64,
+        speed_best: f64,
         /// The player has shot a web or zipped at least once (kept with the
         /// settings): the hint is not shown again. And the ticks it has been up
         /// since the game started.
@@ -4105,12 +4114,19 @@ pub mod spiderman {
         /// the next start of the game.
         fn panel(&mut self, active: bool) {
             let show = active && self.mode == Mode::Web && !self.hint_done && self.hint_ticks < HINT_TICKS;
-            let lines: Vec<String> = if show {
+            let mut lines: Vec<String> = if show {
                 self.hint_ticks += 1;
                 vec!["Hold {web} and jump to swing, or hold {zip} to zip".into()]
             } else {
                 Vec::new()
             };
+            // Test speedometer, in blocks per second (= m/s): the cap shows the long-flight raise.
+            if active && self.mode == Mode::Web {
+                let cap = self.spidey.speed_cap();
+                let extra = (cap / web::MAX_SPEED - 1.0) * 100.0;
+                lines.push(format!("Speed {:.0} m/s   flight max {:.0}   best {:.0}", self.speed_now * 20.0, self.speed_flight * 20.0, self.speed_best * 20.0));
+                lines.push(format!("Cap {:.0} m/s (+{:.0}%)   in the air {:.1} s", cap * 20.0, extra, self.spidey.airborne() as f64 / 20.0));
+            }
             if lines != self.last_panel {
                 if lines.is_empty() {
                     hud::clear();
@@ -4139,6 +4155,9 @@ pub mod spiderman {
                     last_chest: None,
                     now: 100,
                     last_panel: Vec::new(),
+                    speed_now: 0.0,
+                    speed_flight: 0.0,
+                    speed_best: 0.0,
                     hint_done: false,
                     hint_ticks: 0,
                     shots: 0,
@@ -4213,9 +4232,17 @@ pub mod spiderman {
                     Some(last) if self.spidey.driving => chest - last,
                     _ => P::of(&state.velocity),
                 };
-                if let Some(v) = self.spidey.tick(&state, chest, v) {
+                let asked = self.spidey.tick(&state, chest, v);
+                if let Some(v) = asked {
                     motion::set_velocity(v.wit());
                 }
+                self.speed_now = v.len();
+                if self.spidey.driving && !state.on_ground {
+                    self.speed_flight = self.speed_flight.max(self.speed_now);
+                } else if state.on_ground {
+                    self.speed_flight = 0.0;
+                }
+                self.speed_best = self.speed_best.max(self.speed_now);
                 let shots = self.spidey.webs + self.spidey.zips;
                 if shots != std::mem::replace(&mut self.shots, shots) {
                     motion::web_shot();
