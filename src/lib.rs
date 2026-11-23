@@ -151,6 +151,12 @@ mod web {
     pub const RELEASE_UP: f64 = 0.26;
     pub const RELEASE_UP_FALLING: f64 = 0.12;
     pub const MAX_SPEED: f64 = 2.2;
+    /// A long flight lets the speed past `MAX_SPEED`: after `LONG_FLIGHT_START` ticks in the air with the
+    /// mod driving, the cap rises over `LONG_FLIGHT_RAMP` ticks to `LONG_FLIGHT_EXTRA` more (+30 %). The pull
+    /// itself is unchanged, so only a flight that keeps its speed gets there; touching the ground resets it.
+    pub const LONG_FLIGHT_START: u32 = 60;
+    pub const LONG_FLIGHT_RAMP: u32 = 100;
+    pub const LONG_FLIGHT_EXTRA: f64 = 0.3;
     pub const COLOR: u32 = 0xEE_EEEE;
 }
 
@@ -166,6 +172,12 @@ struct Swing {
     last_chest: Option<P>,
     now: u64,
     last_panel: Vec<String>,
+    /// Test speedometer (blocks per tick): the speed now, the top of this flight, the best since the game started.
+    /// The speedometer in the corner, `/swingmode speedo on|off` (off at start).
+    speedo: bool,
+    speed_now: f64,
+    speed_flight: f64,
+    speed_best: f64,
     /// The player has shot a web or zipped at least once (kept with the
     /// settings): the hint is not shown again. And the ticks it has been up
     /// since the game started.
@@ -294,6 +306,11 @@ impl Swing {
                         self.spidey.web_delay = d.clamp(0.0, 2.0);
                     }
                 }
+                Some(("speed", v)) => {
+                    if let Ok(d) = v.trim().parse::<f64>() {
+                        self.spidey.long_flight_extra = d.clamp(0.0, 2.0);
+                    }
+                }
                 Some(("hint", v)) => self.hint_done = v.trim() == "done",
                 Some(("camera", v)) => {
                     if let Ok(d) = v.trim().parse::<f64>() {
@@ -307,8 +324,9 @@ impl Swing {
 
     fn save_settings(&self) {
         let text = format!(
-            "delay={}\nhint={}\ncamera={}\n",
+            "delay={}\nspeed={}\nhint={}\ncamera={}\n",
             self.spidey.web_delay,
+            self.spidey.long_flight_extra,
             if self.hint_done { "done" } else { "show" },
             self.camera
         );
@@ -344,12 +362,19 @@ impl Swing {
     /// the next start of the game.
     fn panel(&mut self, active: bool) {
         let show = active && self.mode == Mode::Web && !self.hint_done && self.hint_ticks < HINT_TICKS;
-        let lines: Vec<String> = if show {
+        let mut lines: Vec<String> = if show {
             self.hint_ticks += 1;
             vec!["Hold {web} and jump to swing, or hold {zip} to zip".into()]
         } else {
             Vec::new()
         };
+        // The speedometer, in blocks per second (= m/s): the cap shows the long-flight raise.
+        if active && self.mode == Mode::Web && self.speedo {
+            let cap = self.spidey.speed_cap();
+            let extra = (cap / web::MAX_SPEED - 1.0) * 100.0;
+            lines.push(format!("Speed {:.0} m/s   flight max {:.0}   best {:.0}", self.speed_now * 20.0, self.speed_flight * 20.0, self.speed_best * 20.0));
+            lines.push(format!("Cap {:.0} m/s (+{:.0}%)   in the air {:.1} s", cap * 20.0, extra, self.spidey.airborne() as f64 / 20.0));
+        }
         if lines != self.last_panel {
             if lines.is_empty() {
                 hud::clear();
@@ -378,6 +403,10 @@ impl Mod for Swing {
                 last_chest: None,
                 now: 100,
                 last_panel: Vec::new(),
+                speedo: false,
+                speed_now: 0.0,
+                speed_flight: 0.0,
+                speed_best: 0.0,
                 hint_done: false,
                 hint_ticks: 0,
                 shots: 0,
@@ -452,9 +481,17 @@ impl Mod for Swing {
                 Some(last) if self.spidey.driving => chest - last,
                 _ => P::of(&state.velocity),
             };
-            if let Some(v) = self.spidey.tick(&state, chest, v) {
+            let asked = self.spidey.tick(&state, chest, v);
+            if let Some(v) = asked {
                 motion::set_velocity(v.wit());
             }
+            self.speed_now = v.len();
+            if self.spidey.driving && !state.on_ground {
+                self.speed_flight = self.speed_flight.max(self.speed_now);
+            } else if state.on_ground {
+                self.speed_flight = 0.0;
+            }
+            self.speed_best = self.speed_best.max(self.speed_now);
             let shots = self.spidey.webs + self.spidey.zips;
             if shots != std::mem::replace(&mut self.shots, shots) {
                 motion::web_shot();
@@ -593,6 +630,39 @@ impl Mod for Swing {
             self.spidey.set_debug_pose(rest.trim())?;
             return Ok(Some(format!("Pose held: {}", rest.trim())));
         }
+        if let Some(rest) = args.trim().strip_prefix("speedo") {
+            match rest.trim() {
+                "on" => self.speedo = true,
+                "off" => self.speedo = false,
+                "" => self.speedo = !self.speedo,
+                other => return Err(format!("/swingmode speedo on|off, not {other}")),
+            }
+            return Ok(Some(format!("Speedometer: {} (/swingmode speedo on|off)", if self.speedo { "on" } else { "off" })));
+        }
+        if let Some(rest) = args.trim().strip_prefix("speed") {
+            // A long flight's raise of the speed cap, in percent; `quiet` from the mod's row in Options > Mods.
+            let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
+                Some(r) => (r.trim(), true),
+                None => (rest.trim(), false),
+            };
+            if !rest.is_empty() {
+                let pct: f64 = rest
+                    .trim_end_matches('%')
+                    .parse()
+                    .ok()
+                    .filter(|k: &f64| (0.0..=200.0).contains(k))
+                    .ok_or_else(|| format!("/swingmode speed 0..200 (percent past the usual top speed in a long flight), not {rest}"))?;
+                self.spidey.long_flight_extra = pct / 100.0;
+                self.save_settings();
+                if quiet {
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(format!(
+                "Long flight: the top speed may rise by {:.0}% (/swingmode speed 0..200)",
+                self.spidey.long_flight_extra * 100.0
+            )));
+        }
         if let Some(rest) = args.trim().strip_prefix("delay") {
             // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
             let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
@@ -623,11 +693,11 @@ impl Mod for Swing {
             "off" => Mode::Off,
             "" => {
                 return Ok(Some(
-                    "/swingmode on|off · delay 0..2 · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
+                    "/swingmode on|off · delay 0..2 · speed 0..200 · speedo · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
                         .into(),
                 ));
             }
-            other => return Err(format!("/swingmode on|off|delay|camera|view|debug, not {other}")),
+            other => return Err(format!("/swingmode on|off|delay|speed|speedo|camera|view|debug, not {other}")),
         };
         self.last_chest = None;
         self.spidey.reset();

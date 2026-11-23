@@ -2247,6 +2247,8 @@ pub mod spiderman {
             /// frames, 0 = it bites on the next tick. Default half: Spider-Man 2
             /// itself cuts the wait by about that much.
             pub web_delay: f64,
+            /// How much past `MAX_SPEED` a long flight may go, as a share (`/swingmode speed`, percent there).
+            pub long_flight_extra: f64,
             /// A jolt of the camera that fades: a slap sets it to 1.
             pub impact: f64,
             cam_wall: Option<P>,
@@ -2268,6 +2270,8 @@ pub mod spiderman {
             /// From the first web until the feet touch the ground: the mod drives.
             pub driving: bool,
             ticks: u32,
+            /// Ticks in the air in a row with the mod driving: a long flight raises the speed cap.
+            airborne: u32,
             /// The pose last sent: parts by name, then the whole body's pitch and roll.
             shown: Vec<(String, [f32; 3])>,
             body: [f32; 2],
@@ -2337,6 +2341,7 @@ pub mod spiderman {
             fn default() -> Self {
                 Spidey {
                     web_delay: 0.5,
+                    long_flight_extra: web::LONG_FLIGHT_EXTRA,
                     impact: 0.0,
                     cam_wall: None,
                     cam_blend: 0.0,
@@ -2352,6 +2357,7 @@ pub mod spiderman {
                     phase: Phase::Ground,
                     driving: false,
                     ticks: 0,
+                    airborne: 0,
                     shown: Vec::new(),
                     body: [0.0; 2],
                     asked: None,
@@ -3018,14 +3024,28 @@ pub mod spiderman {
             pub fn reset(&mut self) {
                 // The settings survive a reset; the rest starts over.
                 let web_delay = self.web_delay;
+                let long_flight_extra = self.long_flight_extra;
                 *self = Spidey::default();
                 self.web_delay = web_delay;
+                self.long_flight_extra = long_flight_extra;
                 motion::clear_pose();
+            }
+
+            /// Ticks in the air in a row with the mod driving.
+            pub fn airborne(&self) -> u32 {
+                self.airborne
+            }
+
+            /// The speed cap: `MAX_SPEED`, raised by up to `LONG_FLIGHT_EXTRA` in a long flight.
+            pub fn speed_cap(&self) -> f64 {
+                let ramp = self.airborne.saturating_sub(web::LONG_FLIGHT_START) as f64 / web::LONG_FLIGHT_RAMP as f64;
+                web::MAX_SPEED * (1.0 + self.long_flight_extra * ramp.min(1.0))
             }
 
             /// One tick: the velocity to set, if the mod drives this tick.
             pub fn tick(&mut self, state: &Sense, chest: P, mut v: P) -> Option<P> {
                 self.ticks += 1;
+                self.airborne = if self.driving && !state.on_ground { self.airborne.saturating_add(1) } else { 0 };
                 // A wall stopped part of last tick's move: carry the speed along it.
                 if let Some(asked) = self.asked.filter(|_| self.driving) {
                     let blocked_x = asked.x.abs() > 0.15 && v.x.abs() < asked.x.abs() * 0.3;
@@ -3188,7 +3208,7 @@ pub mod spiderman {
                     let ahead = if look.flat().len() > 0.1 { look.flat().norm() } else { v.flat().norm() };
                     v = v + ahead * JUMP_OFF_FORWARD + UP * JUMP_OFF_UP;
                     self.asked = None;
-                    return Some(v.clamp(web::MAX_SPEED));
+                    return Some(v.clamp(self.speed_cap()));
                 }
                 // Parkour: running up a wall (Spider-Man 2, the Empire State run,
                 // `h_ToNJySgwE` 425.6–433.8 s: ~3 s up the facade at ~20 m/s, a vault
@@ -3414,7 +3434,7 @@ pub mod spiderman {
                 if self.driving && !state.on_ground && self.zip.is_none() {
                     v = self.dodge(state, v);
                 }
-                let out = self.driving.then_some(v.clamp(web::MAX_SPEED));
+                let out = self.driving.then_some(v.clamp(self.speed_cap()));
                 self.asked = out;
                 out
             }
@@ -3896,6 +3916,12 @@ pub mod spiderman {
         pub const RELEASE_UP: f64 = 0.26;
         pub const RELEASE_UP_FALLING: f64 = 0.12;
         pub const MAX_SPEED: f64 = 2.2;
+        /// A long flight lets the speed past `MAX_SPEED`: after `LONG_FLIGHT_START` ticks in the air with the
+        /// mod driving, the cap rises over `LONG_FLIGHT_RAMP` ticks to `LONG_FLIGHT_EXTRA` more (+30 %). The pull
+        /// itself is unchanged, so only a flight that keeps its speed gets there; touching the ground resets it.
+        pub const LONG_FLIGHT_START: u32 = 60;
+        pub const LONG_FLIGHT_RAMP: u32 = 100;
+        pub const LONG_FLIGHT_EXTRA: f64 = 0.3;
         pub const COLOR: u32 = 0xEE_EEEE;
     }
 
@@ -3911,6 +3937,12 @@ pub mod spiderman {
         last_chest: Option<P>,
         now: u64,
         last_panel: Vec<String>,
+        /// Test speedometer (blocks per tick): the speed now, the top of this flight, the best since the game started.
+        /// The speedometer in the corner, `/swingmode speedo on|off` (off at start).
+        speedo: bool,
+        speed_now: f64,
+        speed_flight: f64,
+        speed_best: f64,
         /// The player has shot a web or zipped at least once (kept with the
         /// settings): the hint is not shown again. And the ticks it has been up
         /// since the game started.
@@ -4039,6 +4071,11 @@ pub mod spiderman {
                             self.spidey.web_delay = d.clamp(0.0, 2.0);
                         }
                     }
+                    Some(("speed", v)) => {
+                        if let Ok(d) = v.trim().parse::<f64>() {
+                            self.spidey.long_flight_extra = d.clamp(0.0, 2.0);
+                        }
+                    }
                     Some(("hint", v)) => self.hint_done = v.trim() == "done",
                     Some(("camera", v)) => {
                         if let Ok(d) = v.trim().parse::<f64>() {
@@ -4052,8 +4089,9 @@ pub mod spiderman {
 
         fn save_settings(&self) {
             let text = format!(
-                "delay={}\nhint={}\ncamera={}\n",
+                "delay={}\nspeed={}\nhint={}\ncamera={}\n",
                 self.spidey.web_delay,
+                self.spidey.long_flight_extra,
                 if self.hint_done { "done" } else { "show" },
                 self.camera
             );
@@ -4089,12 +4127,19 @@ pub mod spiderman {
         /// the next start of the game.
         fn panel(&mut self, active: bool) {
             let show = active && self.mode == Mode::Web && !self.hint_done && self.hint_ticks < HINT_TICKS;
-            let lines: Vec<String> = if show {
+            let mut lines: Vec<String> = if show {
                 self.hint_ticks += 1;
                 vec!["Hold {web} and jump to swing, or hold {zip} to zip".into()]
             } else {
                 Vec::new()
             };
+            // The speedometer, in blocks per second (= m/s): the cap shows the long-flight raise.
+            if active && self.mode == Mode::Web && self.speedo {
+                let cap = self.spidey.speed_cap();
+                let extra = (cap / web::MAX_SPEED - 1.0) * 100.0;
+                lines.push(format!("Speed {:.0} m/s   flight max {:.0}   best {:.0}", self.speed_now * 20.0, self.speed_flight * 20.0, self.speed_best * 20.0));
+                lines.push(format!("Cap {:.0} m/s (+{:.0}%)   in the air {:.1} s", cap * 20.0, extra, self.spidey.airborne() as f64 / 20.0));
+            }
             if lines != self.last_panel {
                 if lines.is_empty() {
                     hud::clear();
@@ -4123,6 +4168,10 @@ pub mod spiderman {
                     last_chest: None,
                     now: 100,
                     last_panel: Vec::new(),
+                    speedo: false,
+                    speed_now: 0.0,
+                    speed_flight: 0.0,
+                    speed_best: 0.0,
                     hint_done: false,
                     hint_ticks: 0,
                     shots: 0,
@@ -4197,9 +4246,17 @@ pub mod spiderman {
                     Some(last) if self.spidey.driving => chest - last,
                     _ => P::of(&state.velocity),
                 };
-                if let Some(v) = self.spidey.tick(&state, chest, v) {
+                let asked = self.spidey.tick(&state, chest, v);
+                if let Some(v) = asked {
                     motion::set_velocity(v.wit());
                 }
+                self.speed_now = v.len();
+                if self.spidey.driving && !state.on_ground {
+                    self.speed_flight = self.speed_flight.max(self.speed_now);
+                } else if state.on_ground {
+                    self.speed_flight = 0.0;
+                }
+                self.speed_best = self.speed_best.max(self.speed_now);
                 let shots = self.spidey.webs + self.spidey.zips;
                 if shots != std::mem::replace(&mut self.shots, shots) {
                     motion::web_shot();
@@ -4338,6 +4395,39 @@ pub mod spiderman {
                 self.spidey.set_debug_pose(rest.trim())?;
                 return Ok(Some(format!("Pose held: {}", rest.trim())));
             }
+            if let Some(rest) = args.trim().strip_prefix("speedo") {
+                match rest.trim() {
+                    "on" => self.speedo = true,
+                    "off" => self.speedo = false,
+                    "" => self.speedo = !self.speedo,
+                    other => return Err(format!("/swingmode speedo on|off, not {other}")),
+                }
+                return Ok(Some(format!("Speedometer: {} (/swingmode speedo on|off)", if self.speedo { "on" } else { "off" })));
+            }
+            if let Some(rest) = args.trim().strip_prefix("speed") {
+                // A long flight's raise of the speed cap, in percent; `quiet` from the mod's row in Options > Mods.
+                let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
+                    Some(r) => (r.trim(), true),
+                    None => (rest.trim(), false),
+                };
+                if !rest.is_empty() {
+                    let pct: f64 = rest
+                        .trim_end_matches('%')
+                        .parse()
+                        .ok()
+                        .filter(|k: &f64| (0.0..=200.0).contains(k))
+                        .ok_or_else(|| format!("/swingmode speed 0..200 (percent past the usual top speed in a long flight), not {rest}"))?;
+                    self.spidey.long_flight_extra = pct / 100.0;
+                    self.save_settings();
+                    if quiet {
+                        return Ok(None);
+                    }
+                }
+                return Ok(Some(format!(
+                    "Long flight: the top speed may rise by {:.0}% (/swingmode speed 0..200)",
+                    self.spidey.long_flight_extra * 100.0
+                )));
+            }
             if let Some(rest) = args.trim().strip_prefix("delay") {
                 // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
                 let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
@@ -4368,11 +4458,11 @@ pub mod spiderman {
                 "off" => Mode::Off,
                 "" => {
                     return Ok(Some(
-                        "/swingmode on|off · delay 0..2 · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
+                        "/swingmode on|off · delay 0..2 · speed 0..200 · speedo · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
                             .into(),
                     ));
                 }
-                other => return Err(format!("/swingmode on|off|delay|camera|view|debug, not {other}")),
+                other => return Err(format!("/swingmode on|off|delay|speed|speedo|camera|view|debug, not {other}")),
             };
             self.last_chest = None;
             self.spidey.reset();

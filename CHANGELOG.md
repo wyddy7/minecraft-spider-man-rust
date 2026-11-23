@@ -15,6 +15,12 @@
   before) and `/swingmode camera`; in flight the camera still backs off 2 blocks more.
 - "Reset all to defaults" on the mod's page puts the web delay and the camera distance back (the rows show it the
   next time the page opens).
+- Long flights go faster: after 3 s in the air the top speed rises over 5 s by up to 30 % more, for as long as
+  the flight keeps its speed; landing resets it. The web's pull is unchanged, so the start feels the same. Pick
+  the raise on the mod's page ("Long-flight speed bonus %", 0 to 200) or with `/swingmode speed`; 0 is the old
+  top speed. "Reset all to defaults" puts it back to 30.
+- `/swingmode speedo` shows a speedometer in the corner: the speed now, the top of this flight, the best since
+  the game started, the current top speed and the time in the air.
 - The web delay row's default is 0.5 again, the mod's own default (0.2.5's row said 1).
 - `/swingmode view` takes an angle from behind, a distance and a height: `/swingmode view 45 2.5 1.4` looks at
   the player from behind and to the right, close up, for checking poses and what the player wears.

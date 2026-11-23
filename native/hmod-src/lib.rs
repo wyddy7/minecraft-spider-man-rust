@@ -25,6 +25,9 @@ pub const COMMANDS: [&str; 1] = ["swingmode"];
 const WEB_DELAY: &str = "web_delay";
 /// The camera distance row: the web mode's chase camera on the ground, in blocks.
 const CAMERA: &str = "camera_distance";
+/// The long-flight speed bonus row: how far past the usual top speed a long flight may go, in percent.
+const SPEED: &str = "long_flight_speed";
+const DEFAULT_SPEED: f64 = 30.0;
 /// The row that puts the others back to their defaults, then turns itself off.
 const RESET: &str = "reset";
 /// The defaults: half the reference web flight (the mod's own default since 0.1), the camera 6 blocks back.
@@ -78,6 +81,9 @@ impl Hooks for Mod {
         let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, DEFAULT_CAMERA)
             .tooltip("How far behind the player the camera stays in web mode, in blocks; it backs off a little more in flight.");
         let _ = r.register_setting(camera);
+        let speed = SettingSpec::range(SPEED, "Long-flight speed bonus %", 0.0, 200.0, 10.0, DEFAULT_SPEED)
+            .tooltip("After 3 s in the air the top speed rises over 5 s by this much; landing resets it. 0 = the usual top speed.");
+        let _ = r.register_setting(speed);
         // The page has no button row, so the reset is a row with one thing to click: it reads
         // "click here", does its work on the click and reads "done" until the page is opened again.
         let reset = SettingSpec::choice(RESET, "Reset all to defaults", ["click here", "done"], 0)
@@ -243,17 +249,20 @@ impl Hooks for Mod {
             if host.setting_choice(RESET) == Some(1) {
                 host.set_setting(MOD_ID, WEB_DELAY, &DEFAULT_WEB_DELAY.to_string());
                 host.set_setting(MOD_ID, CAMERA, &DEFAULT_CAMERA.to_string());
+                host.set_setting(MOD_ID, SPEED, &DEFAULT_SPEED.to_string());
                 host.set_setting(MOD_ID, RESET, "0");
                 let mut ran = ran();
                 ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
                 ran.push(("swingmode".into(), format!("delay {DEFAULT_WEB_DELAY:.2} quiet")));
                 ran.push(("swingmode".into(), format!("camera {DEFAULT_CAMERA:.2} quiet")));
+                ran.push(("swingmode".into(), format!("speed {DEFAULT_SPEED:.0} quiet")));
             }
             return;
         }
         let command = match event.key {
             WEB_DELAY => "delay",
             CAMERA => "camera",
+            SPEED => "speed",
             _ => return,
         };
         if let Some(value) = host.setting_f64(event.key).filter(|v| v.is_finite()) {
