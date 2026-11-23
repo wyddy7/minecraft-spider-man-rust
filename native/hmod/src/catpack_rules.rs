@@ -407,6 +407,8 @@ static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex:
 //   inventory, where with no room it stays on the back.
 // - **Death**: the bag drops where its wearer died, with all that is in it, unless the world
 //   keeps inventories.
+// - **On the ground**: a dropped bag never despawns (`item_expire`), however it got there: a death,
+//   a throw, a player's inventory spilled. Lava and the void still take it (it doesn't burn, though).
 
 /// Where a player's persistent data keeps the bag on their back.
 const BACK: &str = "spider_man_back";
@@ -773,6 +775,17 @@ fn backs_tick(host: &mut dyn ServerHost, level: mod_api::LevelRef, second: bool)
             let one = if wearer == player { own_news(host, *wearer, one.clone()) } else { one.clone() };
             crate::catpack_net::tell(host, *player, one);
         }
+    }
+}
+
+/// The most life the game lets a mod give a dropped item at a time (`ItemExpireEvent`).
+const MAX_EXTRA_LIFE: i32 = 32766;
+
+/// A dropped bag reaches its lifetime: it gets more, every time, so a bag with a cat or things in it
+/// is never lost to the five-minute clean-up of items on the ground.
+pub fn item_expire(event: &mut mod_api::ItemExpireEvent<'_>) {
+    if bag(event.stack).is_some() {
+        event.extra_life = event.extra_life.max(MAX_EXTRA_LIFE);
     }
 }
 
