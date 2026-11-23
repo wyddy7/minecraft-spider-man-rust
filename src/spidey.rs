@@ -283,6 +283,8 @@ pub struct Spidey {
     /// frames, 0 = it bites on the next tick. Default half: Spider-Man 2
     /// itself cuts the wait by about that much.
     pub web_delay: f64,
+    /// How much past `MAX_SPEED` a long flight may go, as a share (`/swingmode speed`, percent there).
+    pub long_flight_extra: f64,
     /// A jolt of the camera that fades: a slap sets it to 1.
     pub impact: f64,
     cam_wall: Option<P>,
@@ -375,6 +377,7 @@ impl Default for Spidey {
     fn default() -> Self {
         Spidey {
             web_delay: 0.5,
+            long_flight_extra: web::LONG_FLIGHT_EXTRA,
             impact: 0.0,
             cam_wall: None,
             cam_blend: 0.0,
@@ -1057,8 +1060,10 @@ impl Spidey {
     pub fn reset(&mut self) {
         // The settings survive a reset; the rest starts over.
         let web_delay = self.web_delay;
+        let long_flight_extra = self.long_flight_extra;
         *self = Spidey::default();
         self.web_delay = web_delay;
+        self.long_flight_extra = long_flight_extra;
         motion::clear_pose();
     }
 
@@ -1070,7 +1075,7 @@ impl Spidey {
     /// The speed cap: `MAX_SPEED`, raised by up to `LONG_FLIGHT_EXTRA` in a long flight.
     pub fn speed_cap(&self) -> f64 {
         let ramp = self.airborne.saturating_sub(web::LONG_FLIGHT_START) as f64 / web::LONG_FLIGHT_RAMP as f64;
-        web::MAX_SPEED * (1.0 + web::LONG_FLIGHT_EXTRA * ramp.min(1.0))
+        web::MAX_SPEED * (1.0 + self.long_flight_extra * ramp.min(1.0))
     }
 
     /// One tick: the velocity to set, if the mod drives this tick.

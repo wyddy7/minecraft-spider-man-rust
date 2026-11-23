@@ -304,6 +304,11 @@ impl Swing {
                         self.spidey.web_delay = d.clamp(0.0, 2.0);
                     }
                 }
+                Some(("speed", v)) => {
+                    if let Ok(d) = v.trim().parse::<f64>() {
+                        self.spidey.long_flight_extra = d.clamp(0.0, 2.0);
+                    }
+                }
                 Some(("hint", v)) => self.hint_done = v.trim() == "done",
                 Some(("camera", v)) => {
                     if let Ok(d) = v.trim().parse::<f64>() {
@@ -317,8 +322,9 @@ impl Swing {
 
     fn save_settings(&self) {
         let text = format!(
-            "delay={}\nhint={}\ncamera={}\n",
+            "delay={}\nspeed={}\nhint={}\ncamera={}\n",
             self.spidey.web_delay,
+            self.spidey.long_flight_extra,
             if self.hint_done { "done" } else { "show" },
             self.camera
         );
@@ -621,6 +627,30 @@ impl Mod for Swing {
             self.spidey.set_debug_pose(rest.trim())?;
             return Ok(Some(format!("Pose held: {}", rest.trim())));
         }
+        if let Some(rest) = args.trim().strip_prefix("speed") {
+            // A long flight's raise of the speed cap, in percent; `quiet` from the mod's row in Options > Mods.
+            let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
+                Some(r) => (r.trim(), true),
+                None => (rest.trim(), false),
+            };
+            if !rest.is_empty() {
+                let pct: f64 = rest
+                    .trim_end_matches('%')
+                    .parse()
+                    .ok()
+                    .filter(|k: &f64| (0.0..=200.0).contains(k))
+                    .ok_or_else(|| format!("/swingmode speed 0..200 (percent past the usual top speed in a long flight), not {rest}"))?;
+                self.spidey.long_flight_extra = pct / 100.0;
+                self.save_settings();
+                if quiet {
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(format!(
+                "Long flight: the top speed may rise by {:.0}% (/swingmode speed 0..200)",
+                self.spidey.long_flight_extra * 100.0
+            )));
+        }
         if let Some(rest) = args.trim().strip_prefix("delay") {
             // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
             let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
@@ -651,11 +681,11 @@ impl Mod for Swing {
             "off" => Mode::Off,
             "" => {
                 return Ok(Some(
-                    "/swingmode on|off · delay 0..2 · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
+                    "/swingmode on|off · delay 0..2 · speed 0..200 · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
                         .into(),
                 ));
             }
-            other => return Err(format!("/swingmode on|off|delay|camera|view|debug, not {other}")),
+            other => return Err(format!("/swingmode on|off|delay|speed|camera|view|debug, not {other}")),
         };
         self.last_chest = None;
         self.spidey.reset();
