@@ -568,7 +568,7 @@ pub fn logged_out(host: &mut dyn ServerHost, player: u128) {
 
 /// Where a player's persistent data keeps the bag on their back: under `PERSISTED`, which the
 /// game carries over to a player's respawn (the rest of the data is lost at a death). 0.2.6 kept
-/// it at the top level, which is still read and moved under `PERSISTED` with the next write.
+/// it at the top level, which is moved under `PERSISTED` the first time it is read.
 const BACK: &str = "spider_man_back";
 const PERSISTED: &str = "PlayerPersisted";
 
@@ -590,7 +590,21 @@ fn back(host: &mut dyn ServerHost, player: PlayerRef) -> Option<ItemStack> {
     {
         return stack.clone();
     }
-    let data = player.persistent_data(host).unwrap_or_default();
+    let mut data = player.persistent_data(host).unwrap_or_default();
+    // A back saved by 0.2.6 sits at the top level, which a death drops: it moves under
+    // `PERSISTED` the first time it is read, as it is (a newer one already there wins).
+    if let Some(legacy) = data.remove(&BACK.into()) {
+        let mut persisted = match data.get(&PERSISTED.into()) {
+            Some(Tag::Compound(persisted)) => persisted.clone(),
+            _ => Compound::default(),
+        };
+        persisted.entry(BACK.into()).or_insert(legacy);
+        data.insert(PERSISTED.into(), Tag::Compound(persisted));
+        // A refused write leaves the old layout in place, to be moved at the next read.
+        if player.set_persistent_data(host, data.clone()).is_err() {
+            data = player.persistent_data(host).unwrap_or_default();
+        }
+    }
     let saved = match data.get(&PERSISTED.into()) {
         Some(Tag::Compound(persisted)) if persisted.contains_key(&BACK.into()) => persisted.get(&BACK.into()).cloned(),
         _ => data.get(&BACK.into()).cloned(),
