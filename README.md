@@ -64,7 +64,7 @@ for a guest of a LAN world it is not there yet.
 
 ## Status
 
-0.2.7: the native build has everything above, as a `.hmod` on Horizon's Nightly of 2026-11-18 (launcher 0.2.70 or later). Multiplayer on servers is the
+0.2.8: the native build has everything above, as a `.hmod` on Horizon's Nightly of 2026-11-18 (launcher 0.2.70 or later). Multiplayer on servers is the
 plan, the way movement mods do it: the server runs the mod too and lets its players swing.
 
 ## For mod authors

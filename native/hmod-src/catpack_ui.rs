@@ -71,9 +71,12 @@ fn stacks(host: &dyn ClientHost, message: &Compound, key: &str) -> Vec<(usize, I
 
 /// The server tells this client (`catpack_net`).
 pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
-    // Single player only: what any other server says of bags is not taken.
-    if !crate::own_world() {
-        return;
+    // Single player only: taken only on the integrated connection this game owns, as it is at
+    // this moment; a message from another server, or one arriving after the connection ended, is
+    // dropped.
+    match context.client_host() {
+        Ok(host) if crate::integrated_connection(&*host) => {}
+        _ => return,
     }
     match kind(&told).as_str() {
         "back" => {

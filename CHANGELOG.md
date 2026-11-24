@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.8 — 2026-11-24
+
+- Back catpack: its messages are sent and taken only while your game is connected to its own world, checked at
+  each message; leaving a world stops them at once instead of a tick later. Nothing changes in play.
+
 ## 0.2.7 — 2026-11-24
 
 - Back catpack, tightened for the mod registry. What you see is the same: your own tamed cat rides in the bag, a
