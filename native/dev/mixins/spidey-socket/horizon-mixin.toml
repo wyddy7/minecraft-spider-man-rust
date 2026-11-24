@@ -1,6 +1,6 @@
 [mod]
 id = "spidey-socket"
-version = "0.2.6"
+version = "0.2.7"
 priority = 100
 
 [compatibility]

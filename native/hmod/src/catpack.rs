@@ -6,17 +6,12 @@
 //! game's own head, a short body and two-part front legs cut from the same places of that
 //! texture, so every cat variant fits without a texture of ours.
 //!
-//! Worn as an item: any item in the chest slot whose `custom_data` has `catpack` (`kitten` or
-//! `cat`) and, optionally, `catpack_cat` (a variant). `/catpack give` gives the two test bags.
-//! Every player's bag is seen: a worn stack is sent to all who see its wearer.
-//! `/catpack` alone forces the bag onto every player in view, for looking at it.
-//!
-//! While `SPIDEY_CATPACK_TUNE` names a file, the pose is read from it twice a second
-//! (`key = numbers`, see `Tune`), so it can be tuned in a running game without a rebuild.
+//! Worn as an item: the mod's own bag item in the chest slot, whose `custom_data` has `catpack`
+//! (`kitten` or `cat`) and, optionally, `catpack_cat` (a variant), or worn in the back slot the
+//! server keeps (`catpack_rules`). Only in the player's own world (`crate::own_world`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
 
 use mod_api::{
     BlockEntityDrawContext, CubeListBuilder, EntityRenderLayer, EntityRenderState,
@@ -73,9 +68,6 @@ struct Worn {
     variant: String,
 }
 
-/// `/catpack` alone: this bag on every player in view.
-static FORCED: AtomicBool = AtomicBool::new(false);
-static FORCED_WORN: Mutex<Option<Worn>> = Mutex::new(None);
 /// Each drawn player's entity id and the bag in their chest slot, as of the last client tick: a
 /// worn stack is sent to everyone who sees its wearer, so other players' bags show too.
 static WORN: Mutex<Vec<(u32, Worn)>> = Mutex::new(Vec::new());
@@ -105,6 +97,11 @@ pub const ITEM: &str = "spider_man:cat_backpack";
 /// a host at hand (an item's id is the host's to say), so that a stack can be told a bag
 /// without one.
 static BAG_ITEM: std::sync::OnceLock<mod_api::ItemKey> = std::sync::OnceLock::new();
+
+/// The bag's item as the mod registered it (`register`): known before any stack of it is seen.
+pub fn set_item_key(key: mod_api::ItemKey) {
+    let _ = BAG_ITEM.set(key);
+}
 
 /// Looks at `stack` for the bag's item.
 pub fn learn(host: &dyn mod_api::Host, stack: &mod_api::ItemStack) {
@@ -138,49 +135,6 @@ pub fn item() -> mod_api::Item {
         ("minecraft:damage_resistant".into(), Some(Tag::Compound(fire))),
     ];
     item
-}
-
-/// The test bags `/catpack give` hands out, drawn as the bag
-/// (`native/tools/catpack_item_models.py` makes the item models): with a kitten, with a grown
-/// cat, empty. A cat given this way is only a picture: it has no cat's data to let out.
-pub const GIVE: [&str; 3] = [
-    r#"/give @s spider_man:cat_backpack[custom_data={catpack:"kitten",catpack_cat:"red"},item_model="spider_man:catpack_kitten_red"]"#,
-    r#"/give @s spider_man:cat_backpack[custom_data={catpack:"cat",catpack_cat:"red"},item_model="spider_man:catpack_cat_red"]"#,
-    r#"/give @s spider_man:cat_backpack"#,
-];
-
-/// What `/catpack …` asks for.
-pub enum Command {
-    /// A line to show in chat.
-    Say(String),
-    /// Chat lines to send to the server (the `/give`s), then a line to show.
-    Send(Vec<String>, String),
-}
-
-/// `/catpack`: the forced bag on/off; `/catpack kitten|cat [variant]`: force that one;
-/// `/catpack give`: the two test bags.
-pub fn command(args: &str) -> Command {
-    let mut words = args.split_whitespace();
-    let Some(first) = words.next() else {
-        let on = !FORCED.fetch_xor(true, Ordering::Relaxed);
-        return Command::Say(format!("Back catpack on every player: {}", if on { "on" } else { "off" }));
-    };
-    if first == "tame" {
-        let line = "/data modify entity @e[type=minecraft:cat,limit=1,sort=nearest] Owner set from entity @s UUID".to_owned();
-        return Command::Send(vec![line], "The nearest cat is yours now (a test shortcut)".into());
-    }
-    if first == "give" {
-        let lines = GIVE.iter().map(|s| (*s).to_owned()).collect();
-        return Command::Send(lines, "Three test bags: use one to put it on your back".into());
-    }
-    if let Some(kind) = Kind::parse(first) {
-        let variant = words.next().filter(|v| VARIANTS.contains(v)).unwrap_or("red").to_owned();
-        let line = format!("Back catpack on every player: {first}, {variant}");
-        *lock(&FORCED_WORN) = Some(Worn { kind, variant });
-        FORCED.store(true, Ordering::Relaxed);
-        return Command::Say(line);
-    }
-    Command::Say(format!("/catpack [kitten|cat [variant]] | give. Cats: {}", VARIANTS.join(", ")))
 }
 
 /// Builds both cats (each one's head is the game's own, from `minecraft:cat#main` and
@@ -306,6 +260,15 @@ fn kitten(head: ModelPart) -> ModelPart {
     assemble(centred(head, [0.0, -1.0, -0.9]), body, Vec::new())
 }
 
+/// Leaving a world or a connection: the bags this client was told of, and saw, are forgotten.
+pub fn forget() {
+    lock(&WORN).clear();
+    lock(&HELD).clear();
+    lock(&SEEN).clear();
+    lock(&VELOCITY).clear();
+    *lock(&OWN_HEALTH) = (0.0, 0);
+}
+
 /// Each client tick: which bag the local player wears, read from their chest slot.
 pub fn tick(host: &dyn mod_api::ClientHost) {
     if !learnt()
@@ -369,11 +332,14 @@ fn worn_by(stack: &mod_api::ItemStack) -> Option<Worn> {
         Some(mod_api::Tag::String(s)) => Some(s.to_string_lossy()),
         _ => None,
     };
+    // Only the mod's own item is a bag, whatever another item's data says.
+    if !is_bag_item(stack) {
+        return None;
+    }
     let kind = match text("catpack") {
         Some(named) => Kind::parse(&named)?,
         // The mod's own item, as it is made: no data of its own yet.
-        None if is_bag_item(stack) => Kind::Empty,
-        None => return None,
+        None => Kind::Empty,
     };
     let variant = text("catpack_cat").filter(|v| VARIANTS.contains(&v.as_str())).unwrap_or_else(|| "red".into());
     Some(Worn { kind, variant })
@@ -541,31 +507,9 @@ impl Tune {
         KEYS.iter().position(|k| *k == key).map_or([0.0; 3], |i| self.0[i])
     }
 
-    /// Lines `key = a b c` (`#` starts a comment) over `kind`'s pose; unknown keys and bad numbers
-    /// are skipped, and fewer than three numbers set the first ones.
-    fn read(kind: Kind, text: &str) -> Self {
-        let mut t = Self::of(kind);
-        for line in text.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            let Some((key, value)) = line.split_once('=') else { continue };
-            let Some(i) = KEYS.iter().position(|k| *k == key.trim()) else { continue };
-            for (dst, n) in t.0[i].iter_mut().zip(value.split_whitespace().filter_map(|v| v.parse().ok())) {
-                *dst = n;
-            }
-        }
-        t
-    }
-
-    /// `kind`'s pose under the tuning file, which is read at most twice a second; its own pose
-    /// without the file.
+    /// `kind`'s pose.
     fn current(kind: Kind) -> Self {
-        static CACHE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
-        let Some(path) = std::env::var_os("SPIDEY_CATPACK_TUNE") else { return Self::of(kind) };
-        let mut cache = lock(&CACHE);
-        if cache.as_ref().is_none_or(|(at, _)| at.elapsed().as_millis() >= 500) {
-            *cache = Some((Instant::now(), std::fs::read_to_string(path).unwrap_or_default()));
-        }
-        Self::read(kind, cache.as_ref().map_or("", |(_, text)| text))
+        Self::of(kind)
     }
 }
 
@@ -901,11 +845,8 @@ fn apply(draw: &mut dyn BlockEntityDrawContext, p: &PartPose) {
     }
 }
 
-/// The bag `entity` shows this frame: the forced one, else the local player's own.
+/// The bag `entity` shows this frame, as of the last client tick.
 fn shown(entity: u32) -> Option<Worn> {
-    if FORCED.load(Ordering::Relaxed) {
-        return Some(lock(&FORCED_WORN).clone().unwrap_or(Worn { kind: Kind::Kitten, variant: "red".into() }));
-    }
     let mut seen = lock(&SEEN);
     if seen.len() < 256 && !seen.contains(&entity) {
         seen.push(entity);
