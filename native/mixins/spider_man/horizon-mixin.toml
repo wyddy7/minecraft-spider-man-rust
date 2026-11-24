@@ -1,6 +1,6 @@
 [mod]
 id = "spider_man"
-version = "0.2.5"
+version = "0.2.6"
 priority = 100
 
 [compatibility]
