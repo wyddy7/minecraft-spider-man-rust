@@ -21,14 +21,14 @@
      ],
      "fallback": {
       "type": "minecraft:model",
-      "model": "spider_man:item/catpack_cat_ragdoll"
+      "model": "spider_man:item/catpack_full"
      }
     }
    }
   ],
   "fallback": {
    "type": "minecraft:model",
-   "model": "spider_man:item/catpack_cat_ragdoll"
+   "model": "spider_man:item/catpack_full"
   }
  }
 }

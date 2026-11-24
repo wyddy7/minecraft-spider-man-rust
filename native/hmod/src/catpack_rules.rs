@@ -1,26 +1,36 @@
 //! The cat backpack's rules, on the world's own server: a player's own tamed cat goes into the
 //! bag, rides there, grows there, and comes back out as the same cat.
 //!
-//! The cat in a bag is the cat itself: its whole entity data, as the game saves it, kept in the
-//! stack's `custom_data` under `catpack_data`, beside what the bag shows (`catpack`: `kitten` or
-//! `cat`; `catpack_cat`: the variant). Nothing of it is kept anywhere else, so the bag can be
-//! dropped, put in a chest or lost with its cat, as a bundle with its items.
+//! Single player only: every rule here acts for the world's own player alone (`crate::own_player`:
+//! the server is this game's own and the player is the one playing it here). A LAN guest or a
+//! player of a dedicated server is never answered, told or changed.
+//!
+//! A bag is the mod's own registered item (`spider_man:cat_backpack`), never another item that
+//! carries the same data. The cat in a bag is a short typed record (`Cat`), kept in the stack's
+//! `custom_data` under `catpack_data`, beside what the bag shows (`catpack`: `kitten` or `cat`;
+//! `catpack_cat`: the variant): its variant, voice, name, collar, age, whether its age is locked,
+//! whether it sits, its health, its owner, and the UUID it had (only to refuse letting out a cat
+//! that is already in the world). Nothing else of the cat is kept, and nothing else is ever put
+//! back: a cat comes out of a bag as the mod builds it from those checked fields, by the mod
+//! API's own spawn, for the player who owns it. So the bag can be dropped, put in a chest or
+//! lost with its cat, as a bundle with its items, and no stack, whatever its data says, can put
+//! anything else into the world.
 //!
 //! - **In**: use a bag in the hand on your own tamed cat, or, wearing the bag, sneak and use the
 //!   cat. A bag that holds a cat, someone else's cat and an untamed one are refused with a line
 //!   over the hotbar.
-//! - **Out**: sneak and use the bag on the top of a block with two clear blocks above it.
+//! - **Out**: sneak and use the bag on the top of a block with two clear blocks above it. Only the
+//!   cat's owner lets it out.
 //! - **Growing**: a kitten in a bag in a player's inventory grows as it would outside (not one
 //!   whose age is locked); grown, the bag shows a grown cat.
 //!
 //! A cat is never lost to a failure. Going in, the stack is written first and the cat removed
-//! only after; coming out, the cat is put into the world first and the stack emptied only after.
-//! Whatever fails in between leaves the cat in at least one place, and a cat that is in both is
-//! refused its second coming out (the world already has one of its UUID).
+//! only after; coming out, the cat is put into the world first and the stack emptied after, and
+//! a stack that can't be emptied takes the cat back out of the world.
 //!
-//! Known gap: the cat comes out with a new UUID. The mod API puts a mob into the world and then
-//! merges its data, and a mob's UUID can't be merged; everything else (name, owner, variant,
-//! collar, age, health) is the cat's own.
+//! Known gap: the cat comes out with a new UUID (the mod API puts a mob into the world with one
+//! of its own); everything the player sees of it (name, owner, variant, collar, age, health) is
+//! the cat's own.
 //!
 //! The bag is worn in a back slot of the mod's own and holds 27 stacks (both below).
 //!
@@ -39,24 +49,17 @@ enum Bag {
     Holding(Compound),
 }
 
-/// What the stack is to the rules, if it is a cat backpack: one that says so in its
-/// `custom_data`, or the mod's own item as it is made (no data yet: empty).
+/// What the stack is to the rules, if it is the mod's own bag item: empty, or holding a cat.
 fn bag(stack: &ItemStack) -> Option<Bag> {
+    if !crate::catpack::is_bag_item(stack) {
+        return None;
+    }
     let read = |name: &str| mod_api::ItemResource::of(stack).component(&mod_api::ComponentId::new(name)?);
-    let custom = match read("minecraft:custom_data") {
-        Some(Tag::Compound(custom)) if custom.contains_key(&"catpack".into()) => custom,
-        other => {
-            if !crate::catpack::is_bag_item(stack) {
-                return None;
-            }
-            let mut custom = match other {
-                Some(Tag::Compound(custom)) => custom,
-                _ => Compound::default(),
-            };
-            custom.insert("catpack".into(), Tag::String("empty".into()));
-            custom
-        }
+    let mut custom = match read("minecraft:custom_data") {
+        Some(Tag::Compound(custom)) => custom,
+        _ => Compound::default(),
     };
+    custom.entry("catpack".into()).or_insert_with(|| Tag::String("empty".into()));
     Some(if custom.contains_key(&"catpack_data".into()) { Bag::Holding(custom) } else { Bag::Empty(custom) })
 }
 
@@ -70,19 +73,173 @@ fn rewritten(stack: &ItemStack, custom: Compound, model: &str) -> Option<ItemSta
     Some(next)
 }
 
-/// What a cat's data shows on a bag: `kitten` or `cat`, and its variant.
-fn shown(cat: &Compound) -> (&'static str, &'static str) {
-    let kind = match cat.get(&"Age".into()) {
-        Some(Tag::Int(age)) if *age < 0 => "kitten",
-        _ => "cat",
-    };
-    let named = match cat.get(&"variant".into()) {
-        Some(Tag::String(s)) => s.to_string_lossy(),
-        _ => String::new(),
-    };
-    let named = named.strip_prefix("minecraft:").unwrap_or(&named);
-    let variant = VARIANTS.iter().copied().find(|v| *v == named).unwrap_or("tabby");
-    (kind, variant)
+/// The sixteen dye colours a collar may be, in the game's order (a collar saved as a number is
+/// its index here).
+const DYES: [&str; 16] = [
+    "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray",
+    "cyan", "purple", "blue", "brown", "green", "red", "black",
+];
+
+/// The voices a cat may have (`sound_variant`), as the game's own cat spawner picks them.
+const VOICES: [&str; 2] = ["classic", "royal"];
+
+/// The longest name a cat keeps, as an anvil allows.
+const NAME_MAX: usize = 50;
+
+/// A collar as the cat's data saved it: a number or a dye's name. Put back the same way.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Collar {
+    Index(u8),
+    Named(&'static str),
+}
+
+/// The cat in a bag: only these fields, each checked, are kept and ever put back.
+#[derive(Clone, PartialEq, Debug)]
+struct Cat {
+    /// One of `VARIANTS`.
+    variant: &'static str,
+    /// One of `VOICES`; none keeps the game's own pick.
+    voice: Option<&'static str>,
+    /// Plain text, at most `NAME_MAX` characters; no styling, no events.
+    name: Option<String>,
+    collar: Option<Collar>,
+    /// Ticks: below 0 a kitten, from -24000 to 0.
+    age: i32,
+    age_locked: bool,
+    sitting: bool,
+    /// From just above 0 to a cat's full 10.
+    health: Option<f32>,
+    /// Who owns the cat; it comes out only for them.
+    owner: u128,
+    /// The UUID the cat had when it went in.
+    uuid: Option<u128>,
+}
+
+fn uuid_of(tag: Option<&Tag>) -> Option<u128> {
+    match tag {
+        Some(Tag::IntArray(parts)) if parts.len() == 4 => Some(parts.iter().fold(0u128, |acc, part| (acc << 32) | u128::from(*part as u32))),
+        _ => None,
+    }
+}
+
+fn uuid_tag(uuid: u128) -> Tag {
+    Tag::IntArray((0..4).rev().map(|i| (uuid >> (32 * i)) as u32 as i32).collect())
+}
+
+/// A name as plain text: a string, or a text component's own `text` and its `extra` parts'.
+fn plain_name(tag: &Tag, depth: u8, out: &mut String) {
+    match tag {
+        Tag::String(text) => out.push_str(&text.to_string_lossy()),
+        Tag::Compound(component) if depth < 4 => {
+            if let Some(text @ Tag::String(_)) = component.get(&"text".into()) {
+                plain_name(text, depth + 1, out);
+            }
+            if let Some(Tag::List(extra)) = component.get(&"extra".into()) {
+                for part in extra.iter().take(16) {
+                    plain_name(part, depth + 1, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+impl Cat {
+    /// The checked fields of `data`: a cat's data as the game saves it, or a bag's record of one
+    /// (which uses the same names). `owner`, when given, is the owner (a cat going in, whose
+    /// owner the game has just said); else the data's own. None without an owner, which no cat
+    /// in a bag lacks.
+    fn read(data: &Compound, owner: Option<u128>) -> Option<Self> {
+        let owner = owner.or_else(|| uuid_of(data.get(&"Owner".into())))?;
+        let variant = match data.get(&"variant".into()) {
+            Some(Tag::String(s)) => {
+                let named = s.to_string_lossy();
+                let named = named.strip_prefix("minecraft:").unwrap_or(&named).to_owned();
+                VARIANTS.iter().copied().find(|v| *v == named)
+            }
+            _ => None,
+        }
+        .unwrap_or("tabby");
+        let voice = match data.get(&"sound_variant".into()) {
+            Some(Tag::String(s)) => {
+                let named = s.to_string_lossy();
+                let named = named.strip_prefix("minecraft:").unwrap_or(&named).to_owned();
+                VOICES.iter().copied().find(|v| *v == named)
+            }
+            _ => None,
+        };
+        let name = data.get(&"CustomName".into()).and_then(|tag| {
+            let mut text = String::new();
+            plain_name(tag, 0, &mut text);
+            let text: String = text.chars().filter(|c| !c.is_control() && *c != '\u{a7}').take(NAME_MAX).collect();
+            (!text.trim().is_empty()).then_some(text)
+        });
+        let collar = match data.get(&"CollarColor".into()) {
+            Some(Tag::Byte(n)) => u8::try_from(*n).ok().filter(|n| *n < 16).map(Collar::Index),
+            Some(Tag::Int(n)) => u8::try_from(*n).ok().filter(|n| *n < 16).map(Collar::Index),
+            Some(Tag::String(s)) => {
+                let named = s.to_string_lossy();
+                let named = named.strip_prefix("minecraft:").unwrap_or(&named).to_owned();
+                DYES.iter().copied().find(|d| *d == named).map(Collar::Named)
+            }
+            _ => None,
+        };
+        let age = match data.get(&"Age".into()) {
+            Some(Tag::Int(age)) => (*age).clamp(-24000, 0),
+            _ => 0,
+        };
+        let flag = |key: &str| matches!(data.get(&key.into()), Some(Tag::Byte(n)) if *n != 0);
+        let health = match data.get(&"Health".into()) {
+            Some(Tag::Float(bits)) => Some(f32::from_bits(*bits)).filter(|h| h.is_finite() && *h > 0.0).map(|h| h.min(10.0)),
+            _ => None,
+        };
+        Some(Self {
+            variant,
+            voice,
+            name,
+            collar,
+            age,
+            age_locked: flag("AgeLocked"),
+            sitting: flag("Sitting"),
+            health,
+            owner,
+            uuid: uuid_of(data.get(&"UUID".into())),
+        })
+    }
+
+    /// The cat's fields as the game's own data names them, for `owner`: what a bag keeps (with
+    /// the cat's UUID, `with_uuid`) and what a released cat is given (without).
+    fn data(&self, owner: u128, with_uuid: bool) -> Compound {
+        let mut data = Compound::default();
+        data.insert("variant".into(), Tag::String(format!("minecraft:{}", self.variant).as_str().into()));
+        if let Some(voice) = self.voice {
+            data.insert("sound_variant".into(), Tag::String(format!("minecraft:{voice}").as_str().into()));
+        }
+        if let Some(name) = &self.name {
+            data.insert("CustomName".into(), Tag::String(name.as_str().into()));
+        }
+        match self.collar {
+            Some(Collar::Index(n)) => _ = data.insert("CollarColor".into(), Tag::Byte(n as i8)),
+            Some(Collar::Named(dye)) => _ = data.insert("CollarColor".into(), Tag::String(dye.into())),
+            None => {}
+        }
+        data.insert("Age".into(), Tag::Int(self.age));
+        data.insert("AgeLocked".into(), Tag::Byte(i8::from(self.age_locked)));
+        data.insert("Sitting".into(), Tag::Byte(i8::from(self.sitting)));
+        if let Some(health) = self.health {
+            data.insert("Health".into(), Tag::Float(health.to_bits()));
+        }
+        data.insert("Owner".into(), uuid_tag(owner));
+        if with_uuid && let Some(uuid) = self.uuid {
+            data.insert("UUID".into(), uuid_tag(uuid));
+        }
+        data
+    }
+
+    /// What the cat shows on a bag: `kitten` or `cat`, and its variant.
+    fn shown(&self) -> (&'static str, &'static str) {
+        (if self.age < 0 { "kitten" } else { "cat" }, self.variant)
+    }
 }
 
 fn say(host: &mut dyn ServerHost, player: mod_api::PlayerRef, line: &str) {
@@ -115,6 +272,9 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
         HostSide::Server(host) => host,
         // The client only says the click is taken, so it doesn't also sit the cat down.
         HostSide::Client(host) => {
+            if !crate::own_world() {
+                return None;
+            }
             let worn = host.local_player().is_some_and(|player| {
                 let entity = player.entity();
                 entity.is_shift_key_down(host) == Some(true) && crate::catpack_ui::wears(entity.id())
@@ -123,6 +283,9 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
         }
     };
     let player = host.players().acting_player()?;
+    if !crate::own_player(player.uuid()) {
+        return None;
+    }
     let (place, stack) = match in_hand {
         Some(stack) => (Place::Hand(event.hand), stack.clone()),
         None => {
@@ -145,14 +308,16 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
         say(host, player, "Only your own tamed cat goes into the backpack");
         return Some(InteractionResult::Fail);
     }
-    let Some(data) = cat.nbt(host) else {
+    // Only the checked fields go into the bag, and the owner is the player taking it in.
+    let Some(owner) = owner else { return Some(InteractionResult::Fail) };
+    let Some(record) = cat.nbt(host).and_then(|data| Cat::read(&data, Some(owner))) else {
         say(host, player, "The cat can't be carried right now");
         return Some(InteractionResult::Fail);
     };
-    let (kind, variant) = shown(&data);
+    let (kind, variant) = record.shown();
     custom.insert("catpack".into(), Tag::String(kind.into()));
     custom.insert("catpack_cat".into(), Tag::String(variant.into()));
-    custom.insert("catpack_data".into(), Tag::Compound(data));
+    custom.insert("catpack_data".into(), Tag::Compound(record.data(owner, true)));
     let Some(full) = rewritten(&stack, custom, &format!("spider_man:catpack_{kind}_{variant}")) else {
         return Some(InteractionResult::Fail);
     };
@@ -169,99 +334,39 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
     Some(InteractionResult::SuccessServer)
 }
 
-/// `tag` as the text a command reads (SNBT).
-fn snbt(tag: &Tag, out: &mut String) {
-    use std::fmt::Write;
-    let quoted = |text: &str, out: &mut String| {
-        out.push('"');
-        for c in text.chars() {
-            if c == '"' || c == '\\' {
-                out.push('\\');
-            }
-            out.push(c);
-        }
-        out.push('"');
-    };
-    let list = |open: &str, items: Vec<String>, out: &mut String| {
-        out.push_str(open);
-        out.push_str(&items.join(","));
-        out.push(']');
-    };
-    match tag {
-        Tag::End => {}
-        Tag::Byte(v) => _ = write!(out, "{v}b"),
-        Tag::Short(v) => _ = write!(out, "{v}s"),
-        Tag::Int(v) => _ = write!(out, "{v}"),
-        Tag::Long(v) => _ = write!(out, "{v}L"),
-        Tag::Float(bits) => _ = write!(out, "{:?}f", f32::from_bits(*bits)),
-        Tag::Double(bits) => _ = write!(out, "{:?}d", f64::from_bits(*bits)),
-        Tag::String(text) => quoted(&text.to_string_lossy(), out),
-        Tag::ByteArray(v) => list("[B;", v.iter().map(|b| format!("{}b", *b as i8)).collect(), out),
-        Tag::IntArray(v) => list("[I;", v.iter().map(|i| i.to_string()).collect(), out),
-        Tag::LongArray(v) => list("[L;", v.iter().map(|l| format!("{l}L")).collect(), out),
-        Tag::List(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                snbt(item, out);
-            }
-            out.push(']');
-        }
-        Tag::Compound(fields) => {
-            out.push('{');
-            for (i, (key, value)) in fields.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                quoted(&key.to_string_lossy(), out);
-                out.push(':');
-                snbt(value, out);
-            }
-            out.push('}');
-        }
+/// Lets the cat in the bag `stack` (whose data is `custom`) out at `place`, for `player`: the cat
+/// as it is now in the world and the bag as it then is, empty, or why not. The cat is put into
+/// the world first and the bag emptied by the caller after, who takes the cat back out of the
+/// world if that fails, so a failure leaves the cat in the bag.
+///
+/// The cat comes out only for its owner, and only as the mod builds it from the record's checked
+/// fields (`Cat`): the mod API's own spawn of a plain cat, then those fields merged into it.
+fn release(host: &mut dyn ServerHost, player: PlayerRef, stack: &ItemStack, mut custom: Compound, place: [f64; 3]) -> Result<(mod_api::EntityRef, ItemStack), &'static str> {
+    let Some(Tag::Compound(saved)) = custom.get(&"catpack_data".into()) else { return Err("There is no cat in this backpack") };
+    let Some(cat) = Cat::read(saved, None) else { return Err("There is no cat in this backpack") };
+    if cat.owner != player.uuid() {
+        return Err("Only the cat's owner can let it out");
     }
-}
-
-/// Lets the cat in the bag `stack` (whose data is `custom`) out at `place`: the bag as it then
-/// is, empty, or why not. The cat is put into the world first and the bag emptied by the caller
-/// after, so a failure leaves the cat in the bag.
-fn release(host: &mut dyn ServerHost, player: PlayerRef, stack: &ItemStack, mut custom: Compound, place: [f64; 3]) -> Result<ItemStack, &'static str> {
-    let Some(Tag::Compound(mut cat)) = custom.get(&"catpack_data".into()).cloned() else { return Err("There is no cat in this backpack") };
     let Some(level) = player.entity().level(host) else { return Err("The cat can't come out here") };
     // A cat already in the world (a failure once left it in both places) is not let out twice.
-    let uuid = match cat.get(&"UUID".into()) {
-        Some(Tag::IntArray(parts)) if parts.len() == 4 => Some(mod_api::EntityUuid(parts.iter().fold(0u128, |acc, part| (acc << 32) | u128::from(*part as u32)))),
-        _ => None,
-    };
-    if uuid.is_some_and(|uuid| host.entity_by_uuid(uuid).is_some()) {
+    if cat.uuid.is_some_and(|uuid| host.entity_by_uuid(mod_api::EntityUuid(uuid)).is_some()) {
         return Err("This cat is already out in the world");
     }
-    // The same cat, where it is let out.
-    for gone in ["Pos", "Motion", "Rotation"] {
-        cat.remove(&gone.into());
-    }
-    // A stand-in cat comes first, by the mod API's own spawn, which gives a new UUID. It then
-    // summons the real one as a command does, with the cat's own data and so its own UUID, and
-    // leaves: a command run by a mob tells no one, where one run by the player would write
-    // "Summoned new Cat" into their chat. Where the command is refused, the stand-in takes the
-    // cat's data and stays, the same cat in all but its UUID.
-    let Some(stand_in) = level.spawn_mob(host, "minecraft:cat", place, SpawnReason::Bucket) else { return Err("The cat can't come out here") };
-    let mut line = format!("summon minecraft:cat {:.3} {:.3} {:.3} ", place[0], place[1], place[2]);
-    snbt(&Tag::Compound(cat.clone()), &mut line);
-    let summoned = stand_in.run_command_with_output(host, &line, mod_api::PermissionLevel::Gamemasters).success
-        && uuid.is_some_and(|uuid| host.entity_by_uuid(uuid).is_some());
-    if summoned {
-        stand_in.discard(host);
-    } else if !stand_in.merge_nbt(host, cat) {
-        stand_in.discard(host);
+    let Some(out) = level.spawn_mob(host, "minecraft:cat", place, SpawnReason::Bucket) else { return Err("The cat can't come out here") };
+    if !out.merge_nbt(host, cat.data(player.uuid(), false)) {
+        out.discard(host);
         return Err("The cat can't come out here");
     }
     custom.remove(&"catpack_data".into());
     custom.remove(&"catpack_cat".into());
     custom.insert("catpack".into(), Tag::String("empty".into()));
-    rewritten(stack, custom, "spider_man:catpack").ok_or("The cat can't come out here")
+    match rewritten(stack, custom, "spider_man:catpack") {
+        Some(empty) => Ok((out, empty)),
+        None => {
+            out.discard(host);
+            Err("The cat can't come out here")
+        }
+    }
 }
 
 /// A player uses what they hold on a block: sneaking, a bag with a cat lets it out on top of
@@ -279,6 +384,9 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
         // The client says the click is taken where the server will let the cat out, so it
         // doesn't go on to use the item as well (which would put the emptied bag on the back).
         HostSide::Client(host) => {
+            if !crate::own_world() {
+                return None;
+            }
             let sneaking = host.local_player().is_some_and(|p| p.entity().is_shift_key_down(host) == Some(true));
             return (sneaking && click.hit.face == [0, 1, 0]).then_some(InteractionResult::Success);
         }
@@ -287,6 +395,9 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
         Some(player) => player,
         None => host.players().server_players().into_iter().find(|p| p.uuid() == click.player)?,
     };
+    if !crate::own_player(player.uuid()) {
+        return None;
+    }
     if player.entity().is_shift_key_down(host) != Some(true) {
         return None;
     }
@@ -306,8 +417,13 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
     }
     let place = [f64::from(at[0]) + 0.5, f64::from(at[1]), f64::from(at[2]) + 0.5];
     match release(host, player, stack, custom, place) {
-        Ok(empty) => {
-            let _ = LivingRef::new(player.entity()).set_hand_item(host, click.hand, Some(empty));
+        Ok((cat, empty)) => {
+            // The bag emptied, or the cat back out of the world: never in both places.
+            if !matches!(LivingRef::new(player.entity()).set_hand_item(host, click.hand, Some(empty)), Ok(true)) {
+                cat.discard(host);
+                say(host, player, "The cat can't come out here");
+                return Some(InteractionResult::Fail);
+            }
             Some(InteractionResult::SuccessServer)
         }
         Err(why) => {
@@ -317,20 +433,20 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
     }
 }
 
-/// `stack` a second later, if it is a bag whose kitten grew in that second.
+/// `stack` a second later, if it is a bag whose kitten grew in that second. The record is
+/// written back with only its checked fields.
 fn grown(stack: &ItemStack) -> Option<ItemStack> {
     let Bag::Holding(mut custom) = bag(stack)? else { return None };
-    let Some(Tag::Compound(cat)) = custom.get_mut(&"catpack_data".into()) else { return None };
-    if matches!(cat.get(&"AgeLocked".into()), Some(Tag::Byte(n)) if *n != 0) {
+    let Some(Tag::Compound(saved)) = custom.get(&"catpack_data".into()) else { return None };
+    let mut cat = Cat::read(saved, None)?;
+    if cat.age_locked || cat.age >= 0 {
         return None;
     }
-    let Some(Tag::Int(age)) = cat.get_mut(&"Age".into()) else { return None };
-    if *age >= 0 {
-        return None;
-    }
-    *age = (*age + 20).min(0);
-    let (kind, variant) = shown(cat);
+    cat.age = (cat.age + 20).min(0);
+    let (kind, variant) = cat.shown();
     custom.insert("catpack".into(), Tag::String(kind.into()));
+    custom.insert("catpack_cat".into(), Tag::String(variant.into()));
+    custom.insert("catpack_data".into(), Tag::Compound(cat.data(cat.owner, true)));
     rewritten(stack, custom, &format!("spider_man:catpack_{kind}_{variant}"))
 }
 
@@ -347,15 +463,12 @@ pub fn grow(host: &mut dyn ServerHost, player: PlayerRef) {
 /// After each level's tick, on the server: once a second, the kittens its players carry grow.
 pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
     let HostSide::Server(host) = host else { return };
+    // Nothing at all on a server that isn't this game's own, or before its player is known.
+    if crate::own_server_owner().is_none() {
+        return;
+    }
     let level = event.level;
     save_backs(host, level);
-    if !crate::catpack::learnt() {
-        for player in level.online_players(host).unwrap_or_default() {
-            for (_, stack) in player.inventory_slots(host).unwrap_or_default() {
-                crate::catpack::learn(host, &stack);
-            }
-        }
-    }
     let mut ticks = TICKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if ticks.len() > 64 {
         ticks.clear();
@@ -377,7 +490,7 @@ pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
     if !second {
         return;
     }
-    for player in level.online_players(host).unwrap_or_default() {
+    for player in own_players(host, level) {
         grow(host, player);
         if let Some(stack) = back(host, player)
             && let Some(next) = grown(&stack)
@@ -390,12 +503,55 @@ pub fn level_tick(host: HostSide, event: &mut mod_api::LevelTickPostEvent) {
 /// Each level's ticks since its kittens last grew.
 static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex::new(Vec::new());
 
+/// The players of `level` the rules act for: the world's own player, if they are there.
+fn own_players(host: &mut dyn ServerHost, level: mod_api::LevelRef) -> Vec<PlayerRef> {
+    let mut players = level.online_players(host).unwrap_or_default();
+    players.retain(|p| crate::own_player(p.uuid()));
+    players
+}
+
+/// What the server holds in memory for players, beyond what their save holds: all of it goes
+/// when a server starts or stops, so nothing of one world reaches the next.
+pub fn forget_all() {
+    backs().clear();
+    slot_clicks().clear();
+    UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+    thrown().clear();
+    throws_awaited().clear();
+    windows().clear();
+    TICKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+}
+
+/// `player` leaves: a back changed inside a click is saved now, while they are still listed,
+/// then what the server held for them in memory goes.
+pub fn logged_out(host: &mut dyn ServerHost, player: u128) {
+    let pending = {
+        let mut unsaved = UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let had = unsaved.contains(&player);
+        unsaved.retain(|u| *u != player);
+        had
+    };
+    if pending
+        && let Some(online) = host.players().server_players().into_iter().find(|p| p.uuid() == player)
+    {
+        let worn = backs().iter().find(|(u, _)| *u == player).and_then(|(_, stack)| stack.clone());
+        set_back(host, online, worn);
+    }
+    backs().retain(|(u, _)| *u != player);
+    slot_clicks().retain(|(u, _)| *u != player);
+    thrown().retain(|(u, ..)| *u != player);
+    throws_awaited().retain(|(u, _)| *u != player);
+    windows().retain(|w| w.player != player);
+}
+
 // ---- The back slot ----
 //
 // A bag is worn on the back, in a slot of the mod's own: the chest slot stays free for a
 // chestplate or an elytra. The game has no such slot, so the server keeps it: the stack lives in
-// its wearer's persistent data (`spider_man_back`), which the game saves with the player, and
-// everyone in the wearer's level is told what it shows (`catpack_net`).
+// its wearer's persistent data (`PlayerPersisted.spider_man_back`, the part the game carries over
+// a death), which the game saves with the player. The save is what counts: it is read every time
+// the back is needed, and memory holds it only between a click that changes it and the next tick
+// that saves it. Only the wearer's own game is told what it shows (`catpack_net`).
 //
 // - **On**: sneak and use a bag in the hand (anywhere but on the top of a block when the bag
 //   holds a cat: that lets the cat out). A bag already on the back comes into the hand.
@@ -410,42 +566,65 @@ static TICKS: std::sync::Mutex<Vec<(mod_api::LevelRef, u8)>> = std::sync::Mutex:
 // - **On the ground**: a dropped bag never despawns (`item_expire`), however it got there: a death,
 //   a throw, a player's inventory spilled. Lava and the void still take it (it doesn't burn, though).
 
-/// Where a player's persistent data keeps the bag on their back.
+/// Where a player's persistent data keeps the bag on their back: under `PERSISTED`, which the
+/// game carries over to a player's respawn (the rest of the data is lost at a death). 0.2.6 kept
+/// it at the top level, which is still read and moved under `PERSISTED` with the next write.
 const BACK: &str = "spider_man_back";
+const PERSISTED: &str = "PlayerPersisted";
 
-/// Each player's back, as last read or written: their UUID and the bag.
+/// Each player's back, as last read from their save or written: their UUID and the bag. Read
+/// only where there is no host to read the save with (inside a click), or while a change made
+/// there waits for the next tick to be saved.
 static BACKS: std::sync::Mutex<Vec<(u128, Option<ItemStack>)>> = std::sync::Mutex::new(Vec::new());
 
 fn backs() -> std::sync::MutexGuard<'static, Vec<(u128, Option<ItemStack>)>> {
     BACKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The bag on `player`'s back.
+/// The bag on `player`'s back, as their save holds it (or as a click changed it, until the
+/// next tick saves that).
 fn back(host: &mut dyn ServerHost, player: PlayerRef) -> Option<ItemStack> {
     let uuid = player.uuid();
-    if let Some((_, stack)) = backs().iter().find(|(u, _)| *u == uuid) {
+    if UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&uuid)
+        && let Some((_, stack)) = backs().iter().find(|(u, _)| *u == uuid)
+    {
         return stack.clone();
     }
-    let stack = match player.persistent_data(host).and_then(|data| data.get(&BACK.into()).cloned()) {
+    let data = player.persistent_data(host).unwrap_or_default();
+    let saved = match data.get(&PERSISTED.into()) {
+        Some(Tag::Compound(persisted)) if persisted.contains_key(&BACK.into()) => persisted.get(&BACK.into()).cloned(),
+        _ => data.get(&BACK.into()).cloned(),
+    };
+    let stack = match saved {
         Some(Tag::Compound(saved)) => ItemStack::from_nbt(host, &saved),
         _ => None,
     };
-    backs().push((uuid, stack.clone()));
+    let mut all = backs();
+    match all.iter_mut().find(|(u, _)| *u == uuid) {
+        Some(known) => known.1 = stack.clone(),
+        None => all.push((uuid, stack.clone())),
+    }
     stack
 }
 
-/// Puts `stack` (or nothing) on `player`'s back: saved first, then told to all.
+/// Puts `stack` (or nothing) on `player`'s back: saved first, then told to the wearer.
 fn set_back(host: &mut dyn ServerHost, player: PlayerRef, stack: Option<ItemStack>) -> bool {
     let mut data = player.persistent_data(host).unwrap_or_default();
+    let mut persisted = match data.get(&PERSISTED.into()) {
+        Some(Tag::Compound(persisted)) => persisted.clone(),
+        _ => Compound::default(),
+    };
     match stack.as_ref().map(|s| s.to_nbt(host)) {
         Some(Some(saved)) => {
-            data.insert(BACK.into(), Tag::Compound(saved));
+            persisted.insert(BACK.into(), Tag::Compound(saved));
         }
         Some(None) => return false,
         None => {
-            data.remove(&BACK.into());
+            persisted.remove(&BACK.into());
         }
     }
+    data.remove(&BACK.into());
+    data.insert(PERSISTED.into(), Tag::Compound(persisted));
     if player.set_persistent_data(host, data).is_err() {
         return false;
     }
@@ -461,14 +640,11 @@ fn set_back(host: &mut dyn ServerHost, player: PlayerRef, stack: Option<ItemStac
     true
 }
 
-/// Tells everyone in `wearer`'s level what is on their back.
+/// Tells the wearer's own game what is on their back (single player: there is no one else).
 fn announce(host: &mut dyn ServerHost, wearer: PlayerRef) {
-    let Some(level) = wearer.entity().level(host) else { return };
     let news = back_news(host, wearer);
-    for player in level.online_players(host).unwrap_or_default() {
-        let news = if player == wearer { own_news(host, wearer, news.clone()) } else { news.clone() };
-        crate::catpack_net::tell(host, player, news);
-    }
+    let news = own_news(host, wearer, news);
+    crate::catpack_net::tell(host, wearer, news);
 }
 
 /// `news` of `wearer`'s back for the wearer's own game: with the bag itself, for their
@@ -503,8 +679,11 @@ pub fn right_click_item(host: HostSide, event: &mut mod_api::RightClickItemEvent
     if bag(click.stack).is_none() {
         return false;
     }
-    let HostSide::Server(host) = host else { return true };
-    let Some(player) = host.players().server_players().into_iter().find(|p| p.uuid() == click.player) else { return true };
+    let HostSide::Server(host) = host else { return crate::own_world() };
+    let Some(player) = host.players().server_players().into_iter().find(|p| p.uuid() == click.player) else { return false };
+    if !crate::own_player(player.uuid()) {
+        return false;
+    }
     if player.entity().is_shift_key_down(host) != Some(true) {
         open(host, player, Source::Hand(click.hand));
         return true;
@@ -642,7 +821,7 @@ fn slot_click(host: &mut dyn ServerHost, player: PlayerRef) {
 /// made for their back slot swaps the bag on the cursor with the bag on the back, either of
 /// which may be none, and does nothing to the slot it names. The back is saved with the next tick.
 pub fn stacked_on_other(event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) {
-    let Some(uuid) = event.event.player else { return };
+    let Some(uuid) = event.event.player.filter(|uuid| crate::own_player(*uuid)) else { return };
     {
         let mut clicks = slot_clicks();
         let Some(i) = clicks.iter().position(|(u, _)| *u == uuid) else { return };
@@ -670,7 +849,7 @@ fn save_backs(host: &mut dyn ServerHost, level: mod_api::LevelRef) {
     if unsaved.is_empty() {
         return;
     }
-    let players = level.online_players(host).unwrap_or_default();
+    let players = own_players(host, level);
     for uuid in unsaved {
         let saved = players.iter().find(|player| player.uuid() == uuid).is_some_and(|player| {
             let worn = backs().iter().find(|(u, _)| *u == uuid).and_then(|(_, stack)| stack.clone());
@@ -715,6 +894,9 @@ fn wear_thrown(host: &mut dyn ServerHost, player: PlayerRef, stack: ItemStack) -
 /// after it otherwise. A throw that was awaited is worn and never lands (true: cancel it); any
 /// other bag thrown is remembered for a moment, in case the word comes after.
 pub fn item_toss(host: &mut dyn ServerHost, event: &mut mod_api::ItemTossEvent) -> bool {
+    if !crate::own_player(event.player) {
+        return false;
+    }
     let Some(stack) = event.item.stack(host) else { return false };
     if stack.count() != 1 || bag(&stack).is_none() {
         return false;
@@ -760,7 +942,7 @@ fn thrown_on_slot(host: &mut dyn ServerHost, player: PlayerRef) {
 /// Each server tick of a level: every couple of seconds everyone is told every back again (a
 /// player who joined or came near catches up), and open windows are kept true.
 fn backs_tick(host: &mut dyn ServerHost, level: mod_api::LevelRef, second: bool) {
-    let players = level.online_players(host).unwrap_or_default();
+    let players = own_players(host, level);
     for player in &players {
         if windows().iter().any(|w| w.player == player.uuid()) {
             show(host, *player);
@@ -769,12 +951,8 @@ fn backs_tick(host: &mut dyn ServerHost, level: mod_api::LevelRef, second: bool)
     if !second {
         return;
     }
-    let news: Vec<(PlayerRef, Compound)> = players.iter().map(|p| (*p, back_news(host, *p))).collect();
     for player in &players {
-        for (wearer, one) in &news {
-            let one = if wearer == player { own_news(host, *wearer, one.clone()) } else { one.clone() };
-            crate::catpack_net::tell(host, *player, one);
-        }
+        announce(host, *player);
     }
 }
 
@@ -784,7 +962,7 @@ const MAX_EXTRA_LIFE: i32 = 32766;
 /// A dropped bag reaches its lifetime: it gets more, every time, so a bag with a cat or things in it
 /// is never lost to the five-minute clean-up of items on the ground.
 pub fn item_expire(event: &mut mod_api::ItemExpireEvent<'_>) {
-    if bag(event.stack).is_some() {
+    if crate::own_server_owner().is_some() && bag(event.stack).is_some() {
         event.extra_life = event.extra_life.max(MAX_EXTRA_LIFE);
     }
 }
@@ -796,6 +974,9 @@ pub fn living_death(host: &mut dyn ServerHost, event: &mut mod_api::LivingDeathE
     }
     let Some(entity) = host.entity(event.entity) else { return };
     let Some(player) = host.players().server_players().into_iter().find(|p| p.entity().id() == event.entity) else { return };
+    if !crate::own_player(player.uuid()) {
+        return;
+    }
     close(host, player);
     let Some(stack) = back(host, player) else { return };
     let Some(level) = entity.level(host) else { return };
@@ -1029,6 +1210,10 @@ fn take(host: &mut dyn ServerHost, player: PlayerRef, slot: usize) {
 /// the message.
 pub fn asked(message: Compound, context: &mut dyn mod_api::IPayloadContext) {
     let Ok(player) = context.player() else { return };
+    // Single player only: an ask from anyone but the world's own player is not heard.
+    if !crate::own_player(player.uuid()) {
+        return;
+    }
     let Ok(host) = context.server_host() else { return };
     let slot = match message.get(&"s".into()) {
         Some(Tag::Int(s)) => u32::try_from(*s).ok(),

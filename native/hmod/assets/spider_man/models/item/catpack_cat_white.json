@@ -1,6 +1,0 @@
-{
- "parent": "spider_man:item/catpack_cat",
- "textures": {
-  "cat": "minecraft:entity/cat/cat_white"
- }
-}

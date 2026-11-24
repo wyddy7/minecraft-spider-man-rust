@@ -44,6 +44,36 @@ pub fn set_own_world(own: bool) {
     OWN_WORLD.store(own, Ordering::Relaxed);
 }
 
+/// Whether this game plays its own world now (client side): the cat backpack's client hooks do
+/// nothing anywhere else.
+pub fn own_world() -> bool {
+    OWN_WORLD.load(Ordering::Relaxed)
+}
+
+/// The world's owner as this game's client knows them: the local player's UUID while they play
+/// their own world, else none. The cat backpack is single player only: on the world's own
+/// server its rules act for this one player and no one else (a guest of a LAN world, any
+/// player of a dedicated server).
+static OWNER: Mutex<Option<u128>> = Mutex::new(None);
+/// Whether the server running in this process is the game's own (integrated) one, as of its
+/// `server_starting`; false for a dedicated server and once it has stopped.
+static OWN_SERVER: AtomicBool = AtomicBool::new(false);
+
+fn owner() -> Option<u128> {
+    *OWNER.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether the server-side cat backpack may act for `player`: the server is this game's own and
+/// `player` is the one playing it here.
+pub fn own_player(player: u128) -> bool {
+    OWN_SERVER.load(Ordering::Relaxed) && owner() == Some(player)
+}
+
+/// The owner's UUID, when the server is this game's own and its owner is known.
+pub fn own_server_owner() -> Option<u128> {
+    OWN_SERVER.load(Ordering::Relaxed).then(owner).flatten()
+}
+
 /// Commands the player ran (name, arguments), for the game-side tick to hand to the mod.
 static RAN: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
@@ -74,6 +104,8 @@ impl Hooks for Mod {
         r.register_key_mapping(KeyRegistration::new(catpack_ui::KEY, "key.keyboard.g").label("Back catpack"));
         catpack_net::register(r);
         let bag = r.item_key(catpack::ITEM);
+        // The registered item is what makes a stack a bag; no other item's data does.
+        catpack::set_item_key(bag);
         r.item_part(bag, catpack_ui::BagPart);
         let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
             .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
@@ -104,8 +136,6 @@ impl Hooks for Mod {
     ) {
         event.commands.push(mod_api::Command::new("swingmode"));
         event.commands.push(mod_api::Command::new("swingmode <args:text>"));
-        event.commands.push(mod_api::Command::new("catpack"));
-        event.commands.push(mod_api::Command::new("catpack <args:text>"));
     }
 
     /// The kitten's model is baked once, when the client has started.
@@ -115,8 +145,50 @@ impl Hooks for Mod {
 
     /// Which cat backpack the local player wears, from their chest slot.
     fn client_tick_post(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientTickPostEvent) {
+        let now = if own_world() { host.local_player().map(|p| p.uuid()) } else { None };
+        let changed = {
+            let mut known = OWNER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::replace(&mut *known, now) != now
+        };
+        // Another world, another connection or none: what the client knew of the last one goes.
+        if changed {
+            catpack::forget();
+            catpack_ui::forget();
+        }
+        if now.is_none() {
+            return;
+        }
         catpack::tick(host);
         catpack_ui::tick(host);
+    }
+
+    /// The world's own server starts: the cat backpack acts on it only when it is this game's
+    /// own, and starts with nothing remembered from an earlier world.
+    fn server_starting(&self, _host: &mut dyn mod_api::ServerHost, event: &mut mod_api::ServerStartingEvent) {
+        catpack_rules::forget_all();
+        OWN_SERVER.store(!event.dedicated, Ordering::Relaxed);
+    }
+
+    /// The server has stopped: nothing of its players is kept for the next world.
+    fn server_stopped(&self, _host: &mut dyn mod_api::ServerHost, _event: &mut mod_api::ServerStoppedEvent) {
+        OWN_SERVER.store(false, Ordering::Relaxed);
+        catpack_rules::forget_all();
+    }
+
+    /// A player leaves: a back changed inside a click is saved while they are still listed,
+    /// then whatever the server held for them in memory goes.
+    fn player_logged_out(&self, host: &mut dyn mod_api::ServerHost, event: &mut mod_api::PlayerLoggedOutEvent<'_>) {
+        catpack_rules::logged_out(host, event.player);
+    }
+
+    fn client_disconnecting(&self, _host: &dyn ClientHost, _event: &mut mod_api::ClientDisconnectingEvent) {
+        catpack::forget();
+        catpack_ui::forget();
+    }
+
+    fn client_level_unload(&self, _host: &mut dyn ClientHost, _event: &mut mod_api::ClientLevelUnloadEvent<'_>) {
+        catpack::forget();
+        catpack_ui::forget();
     }
 
     /// The cat backpack draws over both player models.
@@ -130,22 +202,7 @@ impl Hooks for Mod {
 
     /// `/swingmode …` goes to the mod, not the server, in the player's own world only; elsewhere
     /// the server gets it as always.
-    fn command(&self, host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
-        if let Some(args) = event.command.trim().strip_prefix("catpack")
-            && (args.is_empty() || args.starts_with(' '))
-        {
-            let line = match catpack::command(args) {
-                catpack::Command::Say(line) => line,
-                catpack::Command::Send(lines, line) => {
-                    for l in lines {
-                        let _ = host.send_chat(&l);
-                    }
-                    line
-                }
-            };
-            let _ = host.chat_line(mod_api::Text::literal(line));
-            return Flow::Cancel;
-        }
+    fn command(&self, _host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
         if !is_command(event.command) || !OWN_WORLD.load(Ordering::Relaxed) {
             return Flow::Continue;
         }
@@ -182,11 +239,17 @@ impl Hooks for Mod {
     }
 
     fn screen_render_post(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenRenderPostEvent<'_>) {
+        if !own_world() {
+            return;
+        }
         catpack_ui::draw(host, event.draw, event.screen.mouse);
         catpack_ui::draw_slot_label(host, event.draw, event.screen);
     }
 
     fn screen_render_background(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenRenderBackgroundEvent<'_>) {
+        if !own_world() {
+            return;
+        }
         catpack_ui::draw_slot(event.draw, event.screen);
     }
 
@@ -195,17 +258,17 @@ impl Hooks for Mod {
     }
 
     fn screen_key_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenKeyPressedPreEvent<'_>) -> Flow {
-        if !event.repeat && (catpack_ui::key_on_window(host, event.key) || catpack_ui::key_on_slot(event.screen, event.key)) { Flow::Cancel } else { Flow::Continue }
+        if own_world() && !event.repeat && (catpack_ui::key_on_window(host, event.key) || catpack_ui::key_on_slot(event.screen, event.key)) { Flow::Cancel } else { Flow::Continue }
     }
 
     fn render_hand(&self, host: &dyn ClientHost, event: &mut mod_api::RenderHandEvent<'_, '_>) -> Flow {
-        if catpack::render_hand(host, event) { Flow::Cancel } else { Flow::Continue }
+        if own_world() && catpack::render_hand(host, event) { Flow::Cancel } else { Flow::Continue }
     }
 
     fn item_stacked_on_other(&self, context: &dyn mod_api::LoopContext, event: &mut mod_api::ItemStackedOnOtherEvent<'_, '_>) -> Flow {
         match context.side() {
             mod_api::LoopSide::Server => catpack_rules::stacked_on_other(event),
-            mod_api::LoopSide::Client => catpack_ui::stacked_on_other(event),
+            mod_api::LoopSide::Client if own_world() => catpack_ui::stacked_on_other(event),
             _ => {}
         }
         Flow::Continue
@@ -214,14 +277,14 @@ impl Hooks for Mod {
     fn screen_mouse_button_released_pre(&self, _host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonReleasedPreEvent<'_>) -> Flow {
         // The back slot lies outside the inventory's panel, where letting go of a button throws
         // what the cursor holds.
-        if catpack_ui::swallows_release(event.screen) {
+        if own_world() && catpack_ui::swallows_release(event.screen) {
             event.cancelled = true;
         }
         Flow::Continue
     }
 
     fn screen_mouse_button_pressed_pre(&self, host: &dyn ClientHost, event: &mut mod_api::ScreenMouseButtonPressedPreEvent<'_>) -> Flow {
-        if catpack_ui::click(host, event.screen.mouse, event.button) || catpack_ui::click_slot(host, event.screen, event.button) {
+        if own_world() && (catpack_ui::click(host, event.screen.mouse, event.button) || catpack_ui::click_slot(host, event.screen, event.button)) {
             event.cancelled = true;
         }
         Flow::Continue
