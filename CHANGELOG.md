@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.6 — 2026-11-24
 
 - Back catpack: a backpack that carries your cat. Craft it (leather, string, a chest) or take it from the
   mod's creative tab. Use it on your own tamed cat and the cat rides in it, a kitten grows there, and sneak-use
