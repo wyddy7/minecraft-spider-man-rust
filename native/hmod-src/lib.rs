@@ -63,6 +63,23 @@ fn owner() -> Option<u128> {
     *OWNER.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Whether the connection this client has right now is to the integrated server this game
+/// owns (asked of the game at the moment of the call, not remembered from a tick): the cat
+/// backpack's messages are sent and taken only then, and only while `own_world` holds.
+pub fn integrated_connection(host: &dyn ClientHost) -> bool {
+    own_world() && host.client_session().client_server().is_some_and(|server| server.integrated_local)
+}
+
+/// The connection ends or the level goes: from this moment the client is in no own world, its
+/// player is no one's owner, and what it knew of bags is forgotten. The next tick in an own world
+/// sets them again.
+fn teardown() {
+    set_own_world(false);
+    *OWNER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    catpack::forget();
+    catpack_ui::forget();
+}
+
 /// Whether the server-side cat backpack may act for `player`: the server is this game's own and
 /// `player` is the one playing it here.
 pub fn own_player(player: u128) -> bool {
@@ -145,7 +162,7 @@ impl Hooks for Mod {
 
     /// Which cat backpack the local player wears, from their chest slot.
     fn client_tick_post(&self, host: &mut dyn ClientHost, _event: &mut mod_api::ClientTickPostEvent) {
-        let now = if own_world() { host.local_player().map(|p| p.uuid()) } else { None };
+        let now = if integrated_connection(host) { host.local_player().map(|p| p.uuid()) } else { None };
         let changed = {
             let mut known = OWNER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             std::mem::replace(&mut *known, now) != now
@@ -181,14 +198,16 @@ impl Hooks for Mod {
         catpack_rules::logged_out(host, event.player);
     }
 
+    fn client_player_logging_out(&self, _host: &mut dyn ClientHost, _event: &mut mod_api::ClientPlayerLoggingOutEvent) {
+        teardown();
+    }
+
     fn client_disconnecting(&self, _host: &dyn ClientHost, _event: &mut mod_api::ClientDisconnectingEvent) {
-        catpack::forget();
-        catpack_ui::forget();
+        teardown();
     }
 
     fn client_level_unload(&self, _host: &mut dyn ClientHost, _event: &mut mod_api::ClientLevelUnloadEvent<'_>) {
-        catpack::forget();
-        catpack_ui::forget();
+        teardown();
     }
 
     /// The cat backpack draws over both player models.

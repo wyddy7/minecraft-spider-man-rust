@@ -272,7 +272,7 @@ pub fn entity_interact(host: HostSide, event: &mut EntityInteractEvent<'_>) -> O
         HostSide::Server(host) => host,
         // The client only says the click is taken, so it doesn't also sit the cat down.
         HostSide::Client(host) => {
-            if !crate::own_world() {
+            if !crate::integrated_connection(&*host) {
                 return None;
             }
             let worn = host.local_player().is_some_and(|player| {
@@ -384,7 +384,7 @@ pub fn use_item_on_block(host: HostSide, event: &mut UseItemOnBlockEvent<'_>) ->
         // The client says the click is taken where the server will let the cat out, so it
         // doesn't go on to use the item as well (which would put the emptied bag on the back).
         HostSide::Client(host) => {
-            if !crate::own_world() {
+            if !crate::integrated_connection(&*host) {
                 return None;
             }
             let sneaking = host.local_player().is_some_and(|p| p.entity().is_shift_key_down(host) == Some(true));
@@ -693,7 +693,10 @@ pub fn right_click_item(host: HostSide, event: &mut mod_api::RightClickItemEvent
     if bag(click.stack).is_none() {
         return false;
     }
-    let HostSide::Server(host) = host else { return crate::own_world() };
+    let host = match host {
+        HostSide::Server(host) => host,
+        HostSide::Client(host) => return crate::integrated_connection(&*host),
+    };
     let Some(player) = host.players().server_players().into_iter().find(|p| p.uuid() == click.player) else { return false };
     if !crate::own_player(player.uuid()) {
         return false;
