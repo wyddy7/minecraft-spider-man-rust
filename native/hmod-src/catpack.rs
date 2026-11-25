@@ -33,7 +33,7 @@ const EYE_SPRITE: &str = "spider_man:entity/cat_eyes";
 /// at z -2.5 towards -z, the nose 3×2 a pixel out at the bottom): each eye's left edge, its top,
 /// its size, its front (a quarter texel out of the face) and the face behind it.
 const EYE_X: [f32; 2] = [-2.5, 0.5];
-const EYE_TOP: f32 = -0.55;
+const EYE_TOP: f32 = -1.95;
 const EYE_W: f32 = 2.0;
 const EYE_H: f32 = 2.25;
 const EYE_FRONT: f32 = -2.75;
@@ -46,7 +46,7 @@ const SLIT: [f32; 2] = [-0.68, 0.15];
 /// The iris's corners are cut by this much (x, y), so the eye reads round, as the reference's does.
 const ROUND: [f32; 2] = [0.3, 0.35];
 /// The forehead texel of the cat texture the lids are coloured from (the head's front face starts at 5, 5).
-const LID_UV: [f32; 2] = [7.0, 2.0];
+const LID_UV: [f32; 2] = [7.0, 5.0];
 /// Each eye's lids (top, bottom, angry brow, worried brow) and pupil, by name.
 const LIDS: [[&str; 4]; 2] = [["lid0_top", "lid0_bottom", "lid0_angry", "lid0_worried"], ["lid1_top", "lid1_bottom", "lid1_angry", "lid1_worried"]];
 const PUPILS: [&str; 2] = ["pupil0", "pupil1"];
@@ -195,45 +195,6 @@ fn solid(u: f32, v: f32, size: [f32; 2]) -> [f32; 4] {
     [u, v, u, v]
 }
 
-/// The front of the ears, a little behind the face.
-const EAR_FRONT: f32 = -1.25;
-
-/// Experiment: a flat, square head in place of the game's (no muzzle, no nose block), 5 × 5 × 5 about
-/// its middle, its faces cut from the cat texture's head so every coat keeps its colours: the front
-/// and the top from the head's top (fur without the painted eyes), the sides and the back from the
-/// head's sides and back. Two ears stand on its top corners.
-fn flat_head() -> ModelPart {
-    const T: [f32; 2] = [64.0, 32.0];
-    let r = |u0: f32, v0: f32, u1: f32, v1: f32| [u0 / T[0], v0 / T[1], u1 / T[0], v1 / T[1]];
-    let (a, b) = (-2.5, 2.5);
-    let v = |p: [f32; 3], u: f32, w: f32| ModelVertex::new(p, u, w);
-    // A face from its four corners (right top, left top, left bottom, right bottom as seen from
-    // outside) and its texture rectangle.
-    let face = |c: [[f32; 3]; 4], [ua, va, ub, vb]: [f32; 4], n: [f32; 3]| {
-        ModelPolygon::new([v(c[0], ub, va), v(c[1], ua, va), v(c[2], ua, vb), v(c[3], ub, vb)], n)
-    };
-    let top = r(5.0, 0.0, 10.0, 5.0);
-    let mut polygons = vec![
-        face([[b, a, a], [a, a, a], [a, b, a], [b, b, a]], top, [0.0, 0.0, -1.0]),
-        face([[a, a, b], [b, a, b], [b, b, b], [a, b, b]], r(15.0, 5.0, 20.0, 9.0), [0.0, 0.0, 1.0]),
-        face([[b, a, b], [a, a, b], [a, a, a], [b, a, a]], top, [0.0, -1.0, 0.0]),
-        face([[b, b, a], [a, b, a], [a, b, b], [b, b, b]], r(10.0, 0.0, 15.0, 5.0), [0.0, 1.0, 0.0]),
-        face([[a, a, a], [a, a, b], [a, b, b], [a, b, a]], r(0.0, 5.0, 5.0, 9.0), [-1.0, 0.0, 0.0]),
-        face([[b, a, b], [b, a, a], [b, b, a], [b, b, b]], r(10.0, 5.0, 15.0, 9.0), [1.0, 0.0, 0.0]),
-    ];
-    // The ears: small boxes of the head's fur on its top corners.
-    let fur = solid(LID_UV[0], LID_UV[1], T);
-    for x0 in [-2.3_f32, 1.3] {
-        let (x1, y0, y1, z0, z1) = (x0 + 1.0, -3.6, a, EAR_FRONT, EAR_FRONT + 0.75);
-        polygons.push(face([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], fur, [0.0, 0.0, -1.0]));
-        polygons.push(face([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], fur, [0.0, 0.0, 1.0]));
-        polygons.push(face([[x1, y0, z1], [x0, y0, z1], [x0, y0, z0], [x1, y0, z0]], fur, [0.0, -1.0, 0.0]));
-        polygons.push(face([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], fur, [-1.0, 0.0, 0.0]));
-        polygons.push(face([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], fur, [1.0, 0.0, 0.0]));
-    }
-    ModelPart::new(polygons, Vec::new(), PartPose::ZERO)
-}
-
 /// The grown cat's head with the eyes' lids added, on the cat's own forehead fur so every variant's
 /// lids match its coat: per eye a top lid hanging from the eye's top edge, a bottom lid standing
 /// on its bottom edge, and two slanted brows (down to the inner corner, down to the outer), each
@@ -285,12 +246,6 @@ fn eyes() -> ModelPart {
         // Black above, a dark wine below, as the reference's pupil.
         let dot = quad(-w, -h, w, h, EYE_FRONT - 0.01, [5.25 / T[0], 0.0, 5.75 / T[0], 2.0 / T[1]], 0.0);
         parts.push((pupil.to_owned(), ModelPart::new(vec![dot], Vec::new(), PartPose::ZERO)));
-    }
-    // The small nose in the gap between the eyes and the ears' inner faces: the pupil's wine.
-    let wine = [5.5 / T[0], 1.5 / T[1], 5.5 / T[0], 1.5 / T[1]];
-    polygons.push(quad(-0.5, 1.25, 0.5, 1.85, FACE - 0.01, wine, 0.0));
-    for x0 in [-2.3, 1.3] {
-        polygons.push(quad(x0 + 0.25, -3.45, x0 + 0.75, -2.6, EAR_FRONT - 0.01, wine, 0.0));
     }
     let head = ModelPart::new(polygons, parts, PartPose::ZERO);
     ModelPart::new(Vec::new(), vec![("head".to_owned(), head)], PartPose::rotation(0.0, std::f32::consts::PI, 0.0))
@@ -388,8 +343,7 @@ fn cat(head: ModelPart) -> ModelPart {
         ("thin_r", thin()),
         ("thin_l", thin()),
     ];
-    let _ = head;
-    assemble(with_lids(flat_head()), body, legs)
+    assemble(with_lids(centred(head, [0.0, 0.0, -0.5])), body, legs)
 }
 
 /// The kitten, on its 32×32 texture.
