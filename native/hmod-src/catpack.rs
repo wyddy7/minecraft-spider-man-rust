@@ -38,10 +38,11 @@ const EYE_W: f32 = 2.0;
 const EYE_H: f32 = 2.25;
 const EYE_FRONT: f32 = -2.75;
 const FACE: f32 = -2.5;
-/// The pupil at rest: a cat's upright slit. Dilating, it widens far more than it grows (to round).
-const PUPIL: [f32; 2] = [0.6, 1.5];
-const DILATE_X: f32 = 1.6;
-const DILATE_Y: f32 = 0.2;
+/// The pupil at rest: round-ish and big, a cartoon's (the reference's 1.85 × 1.9 of an 8-wide head).
+/// Dilating, it grows; scared, it narrows to an upright slit.
+const PUPIL: [f32; 2] = [1.1, 1.2];
+const DILATE: [f32; 2] = [0.35, 0.3];
+const SLIT: [f32; 2] = [-0.68, 0.15];
 /// The iris's corners are cut by this much (x, y), so the eye reads round, as the reference's does.
 const ROUND: [f32; 2] = [0.3, 0.35];
 /// The forehead texel of the cat texture the lids are coloured from (the head's front face starts at 5, 5).
@@ -695,6 +696,8 @@ struct Motion {
 #[derive(Clone, Copy, Default)]
 struct EyeFrame {
     pupil: [f32; 2],
+    /// How far the pupils have narrowed to a slit, 0 to 1 (fright).
+    slit: f32,
     /// How far both pupils are drawn towards the nose (a glare), -1 to 1 of their reach.
     cross: f32,
     dilate: f32,
@@ -939,7 +942,7 @@ fn slow_blink(p: f32) -> f32 {
 
 /// The eyes this frame. The pupil darts from place to place across the whole eye (measured at
 /// 60 fps: moves of 1 to 6 frames, often a single one; holds of 0.1 to 0.55 s) and leads the head's
-/// turns. It grows to twice its size in about 0.17 s. Lids come in from the top and the bottom and as a slanted
+/// turns. It grows in about 0.17 s; a fright narrows it to a slit at once. Lids come in from the top and the bottom and as a slanted
 /// brow, each snapping in within a tick or two; a blink every few seconds and at most new looks. The mood
 /// follows what happens to the carrier.
 #[allow(clippy::too_many_arguments)]
@@ -969,17 +972,18 @@ fn eyes_of(
     // The mood: (top, bottom, angry brow, worried brow, dilation) and where it holds the pupils, if
     // anywhere (towards the nose, down): the eye gives the shape, the pupil the look. Angry, the
     // reference drops the pupils down and in under the brow (a glare); worried, up and in.
-    let ((top, bottom, angry, worried, dilate), fixed) = match () {
-        _ if started => ((0.0, 0.0, 0.0, 0.0, 1.0), Some([0.0, 0.0])),
-        _ if hiding && !peeking => ((1.0, 0.0, 0.0, 0.0, 0.0), None),
-        _ if peeking => ((0.3, 0.3, 0.0, 0.55, 0.0), None),
-        _ if grumpy || swat > 0.3 => ((0.0, 0.0, 0.65, 0.0, 0.0), Some([0.8, 0.85])),
-        _ if rise < -0.55 => ((0.0, 0.0, 0.0, 0.0, 0.8), Some([0.0, -0.6])),
-        _ if rush > 0.5 => ((0.38, 0.38, 0.0, 0.0, 0.0), Some([0.0, 0.0])),
-        _ if kneading > 0.0 => ((0.0, 0.3, 0.0, 0.0, 0.0), None),
-        _ if held => ((0.0, 0.0, 0.0, 0.0, 0.5), None),
-        _ if drowsy => ((0.45, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.5])),
-        _ => ((0.0, 0.0, 0.0, 0.0, 0.0), None),
+    // A fright narrows the pupils to slits (wide eyes, slit pupils); calm, they stay round.
+    let ((top, bottom, angry, worried, dilate, slit), fixed) = match () {
+        _ if started => ((0.0, 0.0, 0.0, 0.0, 0.0, 1.0), Some([0.0, 0.0])),
+        _ if hiding && !peeking => ((1.0, 0.0, 0.0, 0.0, 0.0, 0.0), None),
+        _ if peeking => ((0.3, 0.3, 0.0, 0.55, 0.0, 0.7), None),
+        _ if grumpy || swat > 0.3 => ((0.0, 0.0, 0.65, 0.0, 0.0, 0.0), Some([0.8, 0.85])),
+        _ if rise < -0.55 => ((0.0, 0.0, 0.0, 0.0, 0.0, 1.0), Some([0.0, -0.6])),
+        _ if rush > 0.5 => ((0.38, 0.38, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.0])),
+        _ if kneading > 0.0 => ((0.0, 0.3, 0.0, 0.0, 0.3, 0.0), None),
+        _ if held => ((0.0, 0.0, 0.0, 0.0, 1.0, 0.0), None),
+        _ if drowsy => ((0.45, 0.0, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.5])),
+        _ => ((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), None),
     };
     // Where to look: a new glance every 4 ticks, kept for one to three of them (holds of 0.2 to
     // 0.6 s), plus where the head is still turning to (a positive turn looks to -x, a positive
@@ -1001,6 +1005,9 @@ fn eyes_of(
         ease(&mut e.pupil[1], look[1], 6.0);
         ease(&mut e.cross, cross, 6.0);
         ease(&mut e.dilate, dilate, 1.2);
+        // A fright narrows them at once; they open again slower.
+        let rate = if slit > e.slit { 4.0 } else { 0.8 };
+        ease(&mut e.slit, slit, rate);
         // Moods snap, as a cat's face does: there in a tick or two, then held.
         ease(&mut e.top, top, 2.5);
         ease(&mut e.bottom, bottom, 2.5);
@@ -1087,7 +1094,7 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame) {
     let Some(pose) = cat.get_child("head").map(ModelPart::store_pose) else { return };
     let Some(head) = eyes.get_child_mut("head") else { return };
     head.load_pose(pose);
-    let grow = [1.0 + DILATE_X * e.dilate, 1.0 + DILATE_Y * e.dilate];
+    let grow = [0, 1].map(|i| 1.0 + DILATE[i] * e.dilate + SLIT[i] * e.slit);
     let size = [PUPIL[0] * grow[0], PUPIL[1] * grow[1]];
     // How far the pupil's middle may go from the eye's, so the pupil stays inside it.
     let reach = [(EYE_W - size[0]) * 0.5, (EYE_H - size[1]) * 0.5];
