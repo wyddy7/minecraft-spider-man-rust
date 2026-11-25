@@ -25,31 +25,29 @@ const BAG_SPRITE: &str = "spider_man:entity/catpack";
 
 /// The grown cat's eyes, `assets/spider_man/textures/entity/cat_eyes.png` (made by
 /// `native/tools/cat_eyes_texture.py`): a yellow iris standing out of the game's head, a dark pupil
-/// that moves freely in it, and lids in the cat's own fur. Proportions after the measured reference
+/// that moves freely in it, and lids in the face's colour, all drawn as frames of one atlas. Proportions after the measured reference
 /// (an 8-wide head: eyes 3 wide and 3.6 tall, flush with its sides, 2.1 apart, the pupil 1.85 by
 /// 1.9), scaled to the cat's 5-wide face.
 const EYE_SPRITE: &str = "spider_man:entity/cat_eyes";
 /// In the grown cat's centred head frame (the head 5×4×5 from (-2.5, -2, -2.5), +y down, the face
 /// at z -2.5 towards -z, the nose 3×2 a pixel out at the bottom): each eye's left edge, its top,
-/// its size, its front (a quarter texel out of the face) and the face behind it.
+/// its size and its front (a hair out of the face, so nothing of the eye stands off it). The
+/// eyes reach from the head's top down to the nose's top, so the nose never covers them.
 const EYE_X: [f32; 2] = [-2.5, 0.5];
-const EYE_TOP: f32 = -1.95;
+const EYE_TOP: f32 = -2.0;
 const EYE_W: f32 = 2.0;
-const EYE_H: f32 = 2.25;
-const EYE_FRONT: f32 = -2.75;
-const FACE: f32 = -2.5;
+const EYE_H: f32 = 2.0;
+const EYE_FRONT: f32 = -2.52;
 /// The pupil at rest: round-ish and big, a cartoon's (the reference's 1.85 × 1.9 of an 8-wide head).
 /// Dilating, it grows; scared, it narrows to an upright slit.
 const PUPIL: [f32; 2] = [1.1, 1.2];
 const DILATE: [f32; 2] = [0.35, 0.3];
 const SLIT: [f32; 2] = [-0.68, 0.15];
-/// The iris's corners are cut by this much (x, y), so the eye reads round, as the reference's does.
-const ROUND: [f32; 2] = [0.3, 0.35];
-/// The forehead texel of the cat texture the lids are coloured from (the head's front face starts at 5, 5).
-const LID_UV: [f32; 2] = [7.0, 5.0];
-/// Each eye's lids (top, bottom, angry brow, worried brow) and pupil, by name.
-const LIDS: [[&str; 4]; 2] = [["lid0_top", "lid0_bottom", "lid0_angry", "lid0_worried"], ["lid1_top", "lid1_bottom", "lid1_angry", "lid1_worried"]];
-const PUPILS: [&str; 2] = ["pupil0", "pupil1"];
+/// The atlas (`native/tools/cat_eyes_texture.py`): its size and one cell's, in texels.
+const ATLAS: [f32; 2] = [240.0, 243.0];
+const CELL: [f32; 2] = [24.0, 27.0];
+/// Each eye's part, by name.
+const EYES_PARTS: [&str; 2] = ["eye0", "eye1"];
 /// The coats the eyes are tried on: the siamese and the black-and-white.
 const EYED: [&str; 2] = ["siamese", "black"];
 
@@ -191,65 +189,30 @@ fn quad(x0: f32, y0: f32, x1: f32, y1: f32, z: f32, [ua, va, ub, vb]: [f32; 4], 
     ModelPolygon::new([v(x1, y0, ub, va), v(x0, y0, ua, va), v(x0, left_bottom, ua, vb), v(x1, right_bottom, ub, vb)], [0.0, 0.0, -1.0])
 }
 
-/// A face of one flat colour: every corner on the middle of the texel (`u`, `v`) of a `size` texture.
-fn solid(u: f32, v: f32, size: [f32; 2]) -> [f32; 4] {
-    let (u, v) = ((u + 0.5) / size[0], (v + 0.5) / size[1]);
-    [u, v, u, v]
-}
-
-/// The grown cat's head with the eyes' lids added, on the cat's own forehead fur so every variant's
-/// lids match its coat: per eye a top lid hanging from the eye's top edge, a bottom lid standing
-/// on its bottom edge, and two slanted brows (down to the inner corner, down to the outer), each
-/// scaled from its edge by how far it is closed.
-fn with_lids(head: ModelPart) -> ModelPart {
-    let fur = solid(LID_UV[0], LID_UV[1], [64.0, 32.0]);
-    let z = EYE_FRONT - 0.02;
-    let mut children: Vec<(String, ModelPart)> = head.children().map(|(n, p)| (n.to_owned(), p.clone())).collect();
-    for (side, (x0, names)) in EYE_X.iter().zip(LIDS).enumerate() {
-        let (x1, inner) = (x0 + EYE_W, if side == 0 { 1.0 } else { -1.0 });
-        let shapes = [
-            (quad(*x0, 0.0, x1, EYE_H, z, fur, 0.0), EYE_TOP),
-            (quad(*x0, -EYE_H, x1, 0.0, z, fur, 0.0), EYE_TOP + EYE_H),
-            (quad(*x0, 0.0, x1, EYE_H, z, fur, inner), EYE_TOP),
-            (quad(*x0, 0.0, x1, EYE_H, z, fur, -inner), EYE_TOP),
-        ];
-        for (name, (polygon, y)) in names.into_iter().zip(shapes) {
-            children.push((name.to_owned(), ModelPart::new(vec![polygon], Vec::new(), PartPose::offset(0.0, y, 0.0))));
-        }
-    }
-    ModelPart::new(head.polygons.clone(), children, head.initial_pose())
-}
-
-/// The eyes' own model, on `EYE_SPRITE`: a root turned half round as the cat's (`assemble`) and a
-/// `head` posed each frame as the cat's, holding each eye (the iris standing out of the face, its
-/// sides, the top darker under the lid and the bottom amber) and its pupil, a free quad moved and
-/// scaled each frame.
+/// The eyes' own model, on the atlas `EYE_SPRITE`: a root turned half round as the cat's
+/// (`assemble`) and a `head` posed each frame as the cat's, holding per eye a flat iris standing
+/// a hair out of the face over a patch of the face's colour, its pupil (a quad moved and scaled freely), and its top lid,
+/// bottom lid and brow: flat quads over the whole eye whose texture is switched frame by frame.
 fn eyes() -> ModelPart {
-    const T: [f32; 2] = [8.0, 16.0];
-    let side = solid(4.0, 0.0, T);
-    let mut polygons = Vec::new();
     let mut parts = Vec::new();
-    for (x0, pupil) in EYE_X.into_iter().zip(PUPILS) {
+    for (x0, name) in EYE_X.into_iter().zip(EYES_PARTS) {
         let (x1, y0, y1) = (x0 + EYE_W, EYE_TOP, EYE_TOP + EYE_H);
-        // The iris: a full-height middle and two shorter side strips, its corners cut.
-        let ramp = |ya: f32, yb: f32| [0.0, (ya - y0) / EYE_H, 4.0 / T[0], (yb - y0) / EYE_H];
-        let [cx, cy] = ROUND;
-        polygons.push(quad(x0 + cx, y0, x1 - cx, y1, EYE_FRONT, ramp(y0, y1), 0.0));
-        polygons.push(quad(x0, y0 + cy, x0 + cx, y1 - cy, EYE_FRONT, ramp(y0 + cy, y1 - cy), 0.0));
-        polygons.push(quad(x1 - cx, y0 + cy, x1, y1 - cy, EYE_FRONT, ramp(y0 + cy, y1 - cy), 0.0));
-        // The sides, from the iris back into the face: top, bottom, left, right.
-        let v = |x: f32, y: f32, z: f32| ModelVertex::new([x, y, z], side[0], side[1]);
-        let (zf, zb) = (EYE_FRONT, FACE);
-        polygons.push(ModelPolygon::new([v(x1, y0, zb), v(x0, y0, zb), v(x0, y0, zf), v(x1, y0, zf)], [0.0, -1.0, 0.0]));
-        polygons.push(ModelPolygon::new([v(x1, y1, zf), v(x0, y1, zf), v(x0, y1, zb), v(x1, y1, zb)], [0.0, 1.0, 0.0]));
-        polygons.push(ModelPolygon::new([v(x0, y0, zf), v(x0, y0, zb), v(x0, y1, zb), v(x0, y1, zf)], [-1.0, 0.0, 0.0]));
-        polygons.push(ModelPolygon::new([v(x1, y0, zb), v(x1, y0, zf), v(x1, y1, zf), v(x1, y1, zb)], [1.0, 0.0, 0.0]));
+        let iris = quad(x0, y0, x1, y1, EYE_FRONT, cell_uv(0), 0.0);
+        // Behind it, a patch of the face's colour (a shut top lid's frame of each coat), so the
+        // game's own painted eyes never show past the iris's rounded corners.
+        let patch = quad(x0, y0, x1, y1, EYE_FRONT + 0.01, cell_uv(25), 0.0);
         let [w, h] = PUPIL.map(|s| s * 0.5);
-        // Black above, a dark wine below, as the reference's pupil.
-        let dot = quad(-w, -h, w, h, EYE_FRONT - 0.01, [5.25 / T[0], 0.0, 5.75 / T[0], 2.0 / T[1]], 0.0);
-        parts.push((pupil.to_owned(), ModelPart::new(vec![dot], Vec::new(), PartPose::ZERO)));
+        let [ua, va, _, _] = cell_uv(1);
+        let dot = quad(-w, -h, w, h, EYE_FRONT - 0.01, [ua, va, ua + 16.0 / ATLAS[0], va + 16.0 / ATLAS[1]], 0.0);
+        let mut children = vec![("pupil".to_owned(), ModelPart::new(vec![dot], Vec::new(), PartPose::ZERO))];
+        for (lid, z) in [("top", 0.02), ("bottom", 0.025), ("brow", 0.03)] {
+            let cover = quad(x0, y0, x1, y1, EYE_FRONT - z, cell_uv(0), 0.0);
+            children.push((lid.to_owned(), ModelPart::new(vec![cover], Vec::new(), PartPose::ZERO)));
+        }
+        children.push(("patch".to_owned(), ModelPart::new(vec![patch], Vec::new(), PartPose::ZERO)));
+        parts.push((name.to_owned(), ModelPart::new(vec![iris], children, PartPose::ZERO)));
     }
-    let head = ModelPart::new(polygons, parts, PartPose::ZERO);
+    let head = ModelPart::new(Vec::new(), parts, PartPose::ZERO);
     ModelPart::new(Vec::new(), vec![("head".to_owned(), head)], PartPose::rotation(0.0, std::f32::consts::PI, 0.0))
 }
 
@@ -345,7 +308,7 @@ fn cat(head: ModelPart) -> ModelPart {
         ("thin_r", thin()),
         ("thin_l", thin()),
     ];
-    assemble(with_lids(centred(head, [0.0, 0.0, -0.5])), body, legs)
+    assemble(centred(head, [0.0, 0.0, -0.5]), body, legs)
 }
 
 /// The kitten, on its 32×32 texture.
@@ -1062,15 +1025,6 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
         place(head, "head_at", f.duck, f.bob);
         let [rx, ry, rz] = rad(t.get("head_rot"));
         head.set_rotation(rx + f.pitch.to_radians(), ry + f.yaw.to_radians(), rz + f.roll.to_radians());
-        // The lids, each scaled down from its edge by how far it is closed.
-        for names in LIDS {
-            for (name, amount) in names.into_iter().zip([f.eyes.top, f.eyes.bottom, f.eyes.angry, f.eyes.worried]) {
-                if let Some(lid) = head.get_child_mut(name) {
-                    lid.visible = amount > 0.005;
-                    lid.y_scale = amount.max(0.005);
-                }
-            }
-        }
     }
     let kind = t.get("paw")[0] as i32;
     for (name, at, rot, of_kind, side) in [
@@ -1089,8 +1043,9 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
     }
 }
 
-/// Poses the eyes' model as the cat's head stands this frame, the pupils where `e` has them.
-fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame) {
+/// Poses the eyes' model as the cat's head stands this frame: the pupils where `e` has them, and
+/// each lid showing `coat`'s frame for how far it is closed (none when open).
+fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame, coat: usize) {
     eyes.visible = cat.visible;
     eyes.load_pose(cat.store_pose());
     let Some(pose) = cat.get_child("head").map(ModelPart::store_pose) else { return };
@@ -1100,15 +1055,49 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame) {
     let size = [PUPIL[0] * grow[0], PUPIL[1] * grow[1]];
     // How far the pupil's middle may go from the eye's, so the pupil stays inside it.
     let reach = [(EYE_W - size[0]) * 0.5, (EYE_H - size[1]) * 0.5];
+    // The brow: angry slants down to the nose; worried, the same frames mirrored, to the outside.
+    let (brow, to_nose) = if e.angry >= e.worried { (e.angry, true) } else { (e.worried, false) };
+    let row = 1 + coat * 4;
     for (side, x0) in EYE_X.iter().enumerate() {
-        if let Some(pupil) = head.get_child_mut(PUPILS[side]) {
+        let Some(eye) = head.get_child_mut(EYES_PARTS[side]) else { continue };
+        if let Some(pupil) = eye.get_child_mut("pupil") {
             // Eye 0's nose side is +x, eye 1's -x.
             let x = (e.pupil[0] + if side == 0 { e.cross } else { -e.cross }).clamp(-1.0, 1.0);
             pupil.set_pos(x0 + EYE_W * 0.5 + x * reach[0], EYE_TOP + EYE_H * 0.5 + e.pupil[1] * reach[1], 0.0);
             pupil.x_scale = grow[0];
             pupil.y_scale = grow[1];
         }
+        if let Some(patch) = eye.get_child_mut("patch") {
+            set_cell(&mut patch.polygons[0], row * 10 + 15, false);
+        }
+        // The atlas's brow slants down to the cell's right: eye 0's nose side; eye 1 mirrors it.
+        let mirror = (side == 1) == to_nose;
+        for (name, amount, frames, first) in [("top", e.top, 16, row * 10), ("bottom", e.bottom, 8, (row + 2) * 10), ("brow", brow, 8, (row + 3) * 10)] {
+            let Some(lid) = eye.get_child_mut(name) else { continue };
+            let frame = (amount.clamp(0.0, 1.0) * frames as f32).round() as usize;
+            lid.visible = frame > 0;
+            if frame > 0 {
+                set_cell(&mut lid.polygons[0], first + frame - 1, name == "brow" && mirror);
+            }
+        }
     }
+}
+
+/// Points `quad`'s texture at the atlas's cell `cell` (counted along rows of 10), mirrored if asked.
+fn set_cell(quad: &mut ModelPolygon, cell: usize, mirror: bool) {
+    let [ua, va, ub, vb] = cell_uv(cell);
+    let (ua, ub) = if mirror { (ub, ua) } else { (ua, ub) };
+    // The corners as `quad` lays them: right top, left top, left bottom, right bottom.
+    for (vertex, (u, v)) in quad.vertices.iter_mut().zip([(ub, va), (ua, va), (ua, vb), (ub, vb)]) {
+        vertex.u = u;
+        vertex.v = v;
+    }
+}
+
+/// The atlas's cell `cell` (rows of 10 cells of 24 × 27 texels), 0 to 1.
+fn cell_uv(cell: usize) -> [f32; 4] {
+    let (col, row) = ((cell % 10) as f32, (cell / 10) as f32);
+    [col * CELL[0] / ATLAS[0], row * CELL[1] / ATLAS[1], (col + 1.0) * CELL[0] / ATLAS[0], (row + 1.0) * CELL[1] / ATLAS[1]]
 }
 
 /// `ModelPart.translateAndRotate` under the layer's pose: to `p`'s place (texels), turned about
@@ -1267,20 +1256,14 @@ fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, fra
     }
     if let Some(cat) = lock(worn.kind.model()).as_mut() {
         pose(cat, tune, frame);
-        // The cartoon eyes are a trial on two coats only; the others keep the game's own face.
-        let eyed = worn.kind == Kind::Cat && EYED.contains(&worn.variant.as_str());
-        if !eyed && let Some(head) = cat.get_child_mut("head") {
-            for name in LIDS.into_iter().flatten() {
-                if let Some(lid) = head.get_child_mut(name) {
-                    lid.visible = false;
-                }
-            }
-        }
         draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
-        if eyed
+        // The cartoon eyes are a trial on two coats only; the others keep the game's own face.
+        let coat = EYED.iter().position(|v| *v == worn.variant);
+        if worn.kind == Kind::Cat
+            && let Some(coat) = coat
             && let Some(eyes) = lock(&EYES).as_mut()
         {
-            pose_eyes(eyes, cat, &frame.eyes);
+            pose_eyes(eyes, cat, &frame.eyes, coat);
             draw.model_part(eyes, EYE_SPRITE, 0xFF_FFFF);
         }
     }
