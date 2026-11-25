@@ -635,13 +635,18 @@ impl Mod for Swing {
         }
         if let Some(rest) = args.trim().strip_prefix("row") {
             let n: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            self.spidey.anim_debug = if n.len() >= 2 { Some((n[0] as usize, n[1] as usize)) } else { None };
-            self.spidey.anim_debug_turn = n.get(2).copied().unwrap_or(0.0);
-            return Ok(Some(format!("Swing row held: {:?} (/swingmode row V R, /swingmode row off)", self.spidey.anim_debug)));
+            self.spidey.anim_debug = if n.len() >= 2 && n.iter().all(|x| x.is_finite()) { Some((n[0] as usize, n[1] as usize)) } else { None };
+            self.spidey.anim_debug_turn = n.get(2).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
+            let held = match self.spidey.anim_debug {
+                Some((take, row)) => format!("take {take}, row {row}"),
+                None => "off".to_string(),
+            };
+            return Ok(Some(format!("Swing row held: {held} (/swingmode row TAKE ROW, /swingmode row off)")));
         }
         if let Some(rest) = args.trim().strip_prefix("take") {
             self.spidey.anim_take = rest.trim().parse::<usize>().ok().map(|n| n.min(8));
-            return Ok(Some(format!("Swing take: {:?} (/swingmode take 0..8, /swingmode take off)", self.spidey.anim_take)));
+            let take = self.spidey.anim_take.map_or("off, the takes alternate".to_string(), |n| n.to_string());
+            return Ok(Some(format!("Swing take: {take} (/swingmode take 0..8, /swingmode take off)")));
         }
         if let Some(rest) = args.trim().strip_prefix("anim") {
             let rest = rest.trim();

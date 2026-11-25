@@ -41,8 +41,7 @@ what we learned checking them in the game.
 - **Cat backpack** (`native/hmod-src/catpack.rs`): the bag is a trunk as wide as the back with a narrower
   unzipped top section, a big front pocket, side pockets, a grab handle and a lid hinged on the top section's
   front wall (open it hangs out in front, shut it lies over the top). Its proportions were set by laying game
-  shots over pictures of the bag in the source game, aligned on the bag's box
-  (`~/games/catpack-review/v8/overlay.py` is the tool): judging side by side was not enough. The cat is our
+  shots over reference pictures of the bag, aligned on the bag's box: judging side by side was not enough. The cat is our
   own small model on the game's cat texture (grown: 64×32, kitten: `_baby`, 32×32), so every variant works
   without a texture of ours: the game's own head, a short upright trunk, and for the grown cat two straight
   one-box paws (the game has no two-part limbs anywhere: checked in the 26.3 model classes). It sits on the

@@ -94,8 +94,8 @@ const GROUND_FRICTION: f64 = 0.546;
 /// does; off a hand vault or a climb, enough lift that the flip has time.
 const ARC_GRAVITY: f64 = 0.05;
 const DROP_GRAVITY: f64 = 0.08;
-/// Ticks the drop with the flip should take (measured,
-/// 151.5–151.9 s: ~0.4 s).
+/// Ticks the drop with the flip should take (measured:
+/// about 0.4 s).
 const FLIP_DROP: f64 = 8.0;
 /// The speed over a short obstacle, at least.
 const OVER_STEP: f64 = 0.32;
@@ -362,8 +362,7 @@ const GROUND_TUG_MAX: f64 = 0.8;
 pub struct Spidey {
     /// How long a web or a zip line flies before it bites, as a share of
     /// its natural flight (`/swingmode delay`): 1 = the reference's 6–8
-    /// frames, 0 = it bites on the next tick. Default half: the full flight
-    /// itself cuts the wait by about that much.
+    /// frames, 0 = it bites on the next tick. Default half.
     pub web_delay: f64,
     /// How much past `MAX_SPEED` a long flight may go, as a share (`/swingmode speed`, percent there).
     pub long_flight_extra: f64,
@@ -816,7 +815,7 @@ impl Spidey {
         let after = state.profile.get(first + on_top).copied().flatten();
         // A higher step right behind (stoops, a parapet then a roof unit):
         // land on this one and go on from there, as the reference chains
-        // pallets → dumpster (146.6–147.1 s).
+        // pallets → dumpster.
         let higher = after.is_some_and(|h| h > top);
         let ends = first + on_top < state.profile.len() && !higher;
         let length = 0.5 * on_top as f64;
@@ -948,7 +947,7 @@ impl Spidey {
                     self.asked = Some(out);
                     return Some(out);
                 }
-                // A forward flip on the drop (SUV 171.6, truck bed 151.5),
+                // A forward flip on the drop,
                 // a little lift so it has time to turn; the drop's length
                 // from the height over the ground the run started on.
                 let fall = h.max(0.5);
@@ -1780,8 +1779,7 @@ impl Spidey {
         }
         if self.driving && state.on_ground && self.web.is_none() && self.zip.is_none() {
             self.driving = false;
-            // Landing fast: a roof run (the reference,
-            // 572.0–573.0 s), if W is held.
+            // Landing fast: a roof run, if W is held.
             let flat = v.flat().len();
             if flat > 0.45 {
                 self.roof_ticks = ROOF_TICKS;
@@ -1906,12 +1904,12 @@ impl Spidey {
                 let f = f64::from(yaw).to_radians();
                 self.after_ahead = if flat.len() > 0.05 { flat.norm() } else { P::new(-f.sin(), 0.0, f.cos()) };
                 // The launch is one continuation among the takes' own (takes 3 and 6 only): played on every rising
-                // release it was most of what the owner saw (44 of 70 releases, 26.11).
+                // release it crowded the other takes out.
                 let launch = AFTER_LAUNCH[vi.min(AFTER_LAUNCH.len() - 1)] && v.y > LAUNCH_RISE && flat.len() > 0.05;
                 self.launch = launch.then(|| {
-                    // The head's angle in the plane of the flight (0 ahead, a quarter turn up). The footage has
-                    // him near vertical, head down, the moment the web goes (the measured trunk is 20 degrees
-                    // off the vertical there), whatever way he flies; the belly faces back, against the flight.
+                    // The head's angle in the plane of the flight (0 ahead, a quarter turn up). The body is
+                    // near vertical, head down, the moment the web goes (20 degrees off the vertical), whatever
+                    // way it flies; the belly faces back, against the flight.
                     let (ahead, th) = (flat.norm(), LAUNCH_START);
                     let (head, back) = (ahead * th.cos() + UP * th.sin(), UP * th.cos() - ahead * th.sin());
                     let right = P::new(-ahead.z, 0.0, ahead.x);
@@ -2254,7 +2252,7 @@ impl Spidey {
                     self.limb_phase += (speed * LIMB_PER_BLOCK).min(STRIDE_MAX_STEP);
                     // Walk → sprint: the swing grows from a walk's (1.4) to a
                     // sprint's, arms wider, and the body leans into the run
-                    // (SM2 426.5–428.9 s: chest well ahead of the feet).
+                    // (chest well ahead of the feet).
                     let walk = (speed / 0.3).min(1.0);
                     let run = ((speed - 0.3) / (WALL_CLIMB as f32 - 0.3)).clamp(0.0, 1.0);
                     let phase = self.limb_phase.cos();

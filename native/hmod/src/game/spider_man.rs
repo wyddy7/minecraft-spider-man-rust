@@ -32,7 +32,7 @@ const SHAKE_DEGREES: (f32, f32) = (3.0, 2.0);
 /// degrees of dead behind or dead ahead, and left alone for a run more
 /// sideways than this (the keys follow the view: turning it would steer a
 /// run along the wall into a circle); the pitch it settles at, looking down
-/// onto the wall from a little above the back (the owner's pick, 29.10); the
+/// onto the wall from a little above the back; the
 /// pitch kept off the poles while turned (degrees).
 const ALIGN_SPEED: f64 = 150.0;
 const RECENTER_DELAY: f64 = 0.6;
@@ -935,8 +935,8 @@ fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
                 game.yaw += delta.clamp(-change, change);
             }
         }
-        // The pitch settles standing or clinging too (the owner's pick was
-        // a still view): only the yaw needs a run to follow.
+        // The pitch settles standing or clinging too (a still view
+        // was chosen): only the yaw needs a run to follow.
         let step = RECENTER_SPEED * dt as f32;
         game.pitch += (RECENTER_PITCH - game.pitch).clamp(-step, step);
     }
@@ -2135,8 +2135,8 @@ pub mod spiderman {
         /// does; off a hand vault or a climb, enough lift that the flip has time.
         const ARC_GRAVITY: f64 = 0.05;
         const DROP_GRAVITY: f64 = 0.08;
-        /// Ticks the drop with the flip should take (measured,
-        /// 151.5–151.9 s: ~0.4 s).
+        /// Ticks the drop with the flip should take (measured:
+        /// about 0.4 s).
         const FLIP_DROP: f64 = 8.0;
         /// The speed over a short obstacle, at least.
         const OVER_STEP: f64 = 0.32;
@@ -2403,8 +2403,7 @@ pub mod spiderman {
         pub struct Spidey {
             /// How long a web or a zip line flies before it bites, as a share of
             /// its natural flight (`/swingmode delay`): 1 = the reference's 6–8
-            /// frames, 0 = it bites on the next tick. Default half: the full flight
-            /// itself cuts the wait by about that much.
+            /// frames, 0 = it bites on the next tick. Default half.
             pub web_delay: f64,
             /// How much past `MAX_SPEED` a long flight may go, as a share (`/swingmode speed`, percent there).
             pub long_flight_extra: f64,
@@ -2857,7 +2856,7 @@ pub mod spiderman {
                 let after = state.profile.get(first + on_top).copied().flatten();
                 // A higher step right behind (stoops, a parapet then a roof unit):
                 // land on this one and go on from there, as the reference chains
-                // pallets → dumpster (146.6–147.1 s).
+                // pallets → dumpster.
                 let higher = after.is_some_and(|h| h > top);
                 let ends = first + on_top < state.profile.len() && !higher;
                 let length = 0.5 * on_top as f64;
@@ -2989,7 +2988,7 @@ pub mod spiderman {
                             self.asked = Some(out);
                             return Some(out);
                         }
-                        // A forward flip on the drop (SUV 171.6, truck bed 151.5),
+                        // A forward flip on the drop,
                         // a little lift so it has time to turn; the drop's length
                         // from the height over the ground the run started on.
                         let fall = h.max(0.5);
@@ -3821,8 +3820,7 @@ pub mod spiderman {
                 }
                 if self.driving && state.on_ground && self.web.is_none() && self.zip.is_none() {
                     self.driving = false;
-                    // Landing fast: a roof run (the reference,
-                    // 572.0–573.0 s), if W is held.
+                    // Landing fast: a roof run, if W is held.
                     let flat = v.flat().len();
                     if flat > 0.45 {
                         self.roof_ticks = ROOF_TICKS;
@@ -3947,12 +3945,12 @@ pub mod spiderman {
                         let f = f64::from(yaw).to_radians();
                         self.after_ahead = if flat.len() > 0.05 { flat.norm() } else { P::new(-f.sin(), 0.0, f.cos()) };
                         // The launch is one continuation among the takes' own (takes 3 and 6 only): played on every rising
-                        // release it was most of what the owner saw (44 of 70 releases, 26.11).
+                        // release it crowded the other takes out.
                         let launch = AFTER_LAUNCH[vi.min(AFTER_LAUNCH.len() - 1)] && v.y > LAUNCH_RISE && flat.len() > 0.05;
                         self.launch = launch.then(|| {
-                            // The head's angle in the plane of the flight (0 ahead, a quarter turn up). The footage has
-                            // him near vertical, head down, the moment the web goes (the measured trunk is 20 degrees
-                            // off the vertical there), whatever way he flies; the belly faces back, against the flight.
+                            // The head's angle in the plane of the flight (0 ahead, a quarter turn up). The body is
+                            // near vertical, head down, the moment the web goes (20 degrees off the vertical), whatever
+                            // way it flies; the belly faces back, against the flight.
                             let (ahead, th) = (flat.norm(), LAUNCH_START);
                             let (head, back) = (ahead * th.cos() + UP * th.sin(), UP * th.cos() - ahead * th.sin());
                             let right = P::new(-ahead.z, 0.0, ahead.x);
@@ -4295,7 +4293,7 @@ pub mod spiderman {
                             self.limb_phase += (speed * LIMB_PER_BLOCK).min(STRIDE_MAX_STEP);
                             // Walk → sprint: the swing grows from a walk's (1.4) to a
                             // sprint's, arms wider, and the body leans into the run
-                            // (SM2 426.5–428.9 s: chest well ahead of the feet).
+                            // (chest well ahead of the feet).
                             let walk = (speed / 0.3).min(1.0);
                             let run = ((speed - 0.3) / (WALL_CLIMB as f32 - 0.3)).clamp(0.0, 1.0);
                             let phase = self.limb_phase.cos();
@@ -7034,13 +7032,18 @@ pub mod spiderman {
             }
             if let Some(rest) = args.trim().strip_prefix("row") {
                 let n: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-                self.spidey.anim_debug = if n.len() >= 2 { Some((n[0] as usize, n[1] as usize)) } else { None };
-                self.spidey.anim_debug_turn = n.get(2).copied().unwrap_or(0.0);
-                return Ok(Some(format!("Swing row held: {:?} (/swingmode row V R, /swingmode row off)", self.spidey.anim_debug)));
+                self.spidey.anim_debug = if n.len() >= 2 && n.iter().all(|x| x.is_finite()) { Some((n[0] as usize, n[1] as usize)) } else { None };
+                self.spidey.anim_debug_turn = n.get(2).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
+                let held = match self.spidey.anim_debug {
+                    Some((take, row)) => format!("take {take}, row {row}"),
+                    None => "off".to_string(),
+                };
+                return Ok(Some(format!("Swing row held: {held} (/swingmode row TAKE ROW, /swingmode row off)")));
             }
             if let Some(rest) = args.trim().strip_prefix("take") {
                 self.spidey.anim_take = rest.trim().parse::<usize>().ok().map(|n| n.min(8));
-                return Ok(Some(format!("Swing take: {:?} (/swingmode take 0..8, /swingmode take off)", self.spidey.anim_take)));
+                let take = self.spidey.anim_take.map_or("off, the takes alternate".to_string(), |n| n.to_string());
+                return Ok(Some(format!("Swing take: {take} (/swingmode take 0..8, /swingmode take off)")));
             }
             if let Some(rest) = args.trim().strip_prefix("anim") {
                 let rest = rest.trim();

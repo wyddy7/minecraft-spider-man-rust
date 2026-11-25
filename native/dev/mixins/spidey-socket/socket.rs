@@ -28,7 +28,7 @@ const SHAKE_DEGREES: (f32, f32) = (3.0, 2.0);
 /// degrees of dead behind or dead ahead, and left alone for a run more
 /// sideways than this (the keys follow the view: turning it would steer a
 /// run along the wall into a circle); the pitch it settles at, looking down
-/// onto the wall from a little above the back (the owner's pick, 29.10); the
+/// onto the wall from a little above the back; the
 /// pitch kept off the poles while turned (degrees).
 const ALIGN_SPEED: f64 = 150.0;
 const RECENTER_DELAY: f64 = 0.6;
@@ -931,8 +931,8 @@ fn recenter(game: &mut super::Game<'_>, align: glam::DQuat, dt: f64) {
                 game.yaw += delta.clamp(-change, change);
             }
         }
-        // The pitch settles standing or clinging too (the owner's pick was
-        // a still view): only the yaw needs a run to follow.
+        // The pitch settles standing or clinging too (a still view
+        // was chosen): only the yaw needs a run to follow.
         let step = RECENTER_SPEED * dt as f32;
         game.pitch += (RECENTER_PITCH - game.pitch).clamp(-step, step);
     }
