@@ -148,6 +148,10 @@ const BODY_LEAN: f64 = 0.6;
 /// How much of the trunk on the web is the measured one (1) rather than the rule «the body stands along the rope»
 /// (0). In the footage the body lies along the flight under the web hand, or is already head down at the release.
 const TRUNK_ON_WEB: f64 = 0.0;
+/// A web shot out of the air: for this many ticks the web arm goes to the anchor by `SHOT_REACH` a tick (it eased
+/// there over the cross-fade, which read as a drift, not a shot).
+const SHOT_SNAP: usize = 3;
+const SHOT_REACH: f32 = 0.6;
 /// Free flight with no take in play: the body lies along the flight path (a dive when falling forward, level when
 /// flying level) instead of the one spread-eagle. Level speed below `GLIDE_SPEED` (blocks a tick) keeps the
 /// spread-eagle: a slow or near-vertical fall has no path to lie along.
@@ -194,6 +198,9 @@ const TICKS_PER_SEC: f32 = 20.0;
 const EASE_OUT_TICKS: u32 = 10;
 
 struct Web {
+    /// The tick the web was shot, and whether it was shot out of the air: the shot's arm thrust plays from it.
+    shot_at: u32,
+    shot_in_air: bool,
     /// Where the web is stuck (drawn), and where the swing hangs from: the
     /// anchor moved sideways over the street, into the plane of flight.
     anchor: P,
@@ -1465,6 +1472,8 @@ impl Spidey {
                     flight,
                     held: 0,
                     // A different take on each web, in a fixed shuffle (no RNG in the mod).
+                    shot_at: self.ticks,
+                    shot_in_air: self.phase != Phase::Ground,
                     variant: self.anim_take.unwrap_or((self.webs as usize * 5) % anim::SWINGS.len()),
                     theta0: 0.0,
                     theta_prev: 0.0,
@@ -1927,6 +1936,8 @@ impl Spidey {
         let mut aim: Option<P> = None;
         // The pose is played mirrored: left for right.
         let mut mirror = false;
+        // A web was just shot out of the air: its arm snaps to the anchor instead of easing there.
+        let mut thrust = false;
         // Target: parts (xRot, yRot, zRot), the body's turn, whether the pose is itself motion (no easing), and
         // the kind of pose (a change of kind is eased across).
         let (parts, place, snap, source): (Vec<(&str, [f32; 3])>, Place, bool, u8) = if let Some((vi, ri)) = self.anim_debug {
@@ -2012,6 +2023,17 @@ impl Spidey {
                         }
                     }
                 }
+            };
+            // The shot's thrust (measured, `swing_anim::SHOT`): from the tick the web leaves, laid over the take's
+            // rows and fading out, so the reach belongs to a real shot and never plays without one.
+            let since = (ticks - w.shot_at) as usize;
+            let row: [f32; 8] = if w.shot_in_air && since < anim::SHOT_TICKS {
+                let x = since as f32 / anim::SHOT_TICKS as f32;
+                let weight = 1.0 - x * x;
+                thrust = since < SHOT_SNAP;
+                std::array::from_fn(|i| angle_step(row[i], anim::SHOT[since][i], weight))
+            } else {
+                row
             };
             // Along the arc: square to the rope in the plane of the swing. It never fades or turns round with
             // the speed, so the body holds still at the top of the arc.
@@ -2424,7 +2446,7 @@ impl Spidey {
                 let last = self.shown.iter().find(|(n, _)| n == name).map_or([0.0; 3], |(_, a)| *a);
                 let fs = side as f32;
                 let (x, z) = limb_angles(l, [last[0], last[1], last[2] * fs]);
-                let k = fade;
+                let k = if thrust { fade.max(SHOT_REACH) } else { fade };
                 let a = [angle_step(last[0], x, k), angle_step(last[1], 0.0, k), angle_step(last[2], z * fs, k)];
                 if let Some(arm) = out.iter_mut().find(|(n, _)| n == name) {
                     arm.1 = a;
