@@ -1706,13 +1706,14 @@ pub mod horizon_mod_sdk {
 
     pub mod storage {
         use std::path::PathBuf;
-        /// Beside the plug while developing, else in the game's folder: survives
-        /// reloads and restarts.
+        /// The game's folder (`mod-storage/spider-man/`): survives restarts. The
+        /// live-reload loop keeps its own beside the plug; a shipped mod reads no
+        /// environment variable for a path.
+        fn folder() -> Option<PathBuf> {
+            Some(std::env::current_dir().ok()?.join("mod-storage").join("spider-man"))
+        }
         fn path(key: &str) -> Option<PathBuf> {
-            let dir = match std::env::var_os("HORIZON_DEV_PLUG") {
-                Some(plug) => PathBuf::from(plug).parent()?.join("plug-storage"),
-                None => std::env::current_dir().ok()?.join("mod-storage").join("spider-man"),
-            };
+            let dir = folder()?;
             let safe: String = key
                 .chars()
                 .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })

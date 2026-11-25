@@ -71,6 +71,13 @@ fn stacks(host: &dyn ClientHost, message: &Compound, key: &str) -> Vec<(usize, I
 
 /// The server tells this client (`catpack_net`).
 pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
+    // Single player only: taken only on the integrated connection this game owns, as it is at
+    // this moment; a message from another server, or one arriving after the connection ended, is
+    // dropped.
+    match context.client_host() {
+        Ok(host) if crate::integrated_connection(&*host) => {}
+        _ => return,
+    }
     match kind(&told).as_str() {
         "back" => {
             let Some(Tag::Int(entity)) = told.get(&"e".into()) else { return };
@@ -108,6 +115,18 @@ pub fn heard(told: Compound, context: &mut dyn mod_api::IPayloadContext) {
         }
         _ => {}
     }
+}
+
+/// Leaving a world or a connection: what the server said, the open window and what was waiting
+/// to be asked are all forgotten.
+pub fn forget() {
+    lock(&BACKS).clear();
+    *lock(&WINDOW) = None;
+    *lock(&MINE) = None;
+    *lock(&WINDOW_OF) = false;
+    *lock(&SLOT_CLICK) = false;
+    *lock(&PREDICT) = false;
+    lock(&ASKS).clear();
 }
 
 /// Each client tick: what was asked goes to the server, and a window the player closed is

@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.2.8 — 2026-11-24
+
+- Back catpack: its messages are sent and taken only while your game is connected to its own world, checked at
+  each message; leaving a world stops them at once instead of a tick later. Nothing changes in play.
+
+## 0.2.7 — 2026-11-24
+
+- Back catpack, tightened for the mod registry. What you see is the same: your own tamed cat rides in the bag, a
+  kitten grows there, and sneak-use on top of a block sets it down with its name, collar, voice and owner.
+- A bag now keeps only what makes the cat yours (its kind, voice, name, collar, age, health and owner) and the cat
+  comes out only for its owner, built from those fields alone: an item made with commands can no longer put
+  anything else into the world. Only the mod's own bag item counts as a bag. Bags filled in 0.2.6 keep their cats.
+- Single player for real: the catpack does nothing on someone else's server or for a guest of a LAN world, on
+  either side, and its messages go only between your game and your own world.
+- Leaving a world forgets everything the catpack remembered there, so a worn bag can no longer follow you into
+  another world. The bag on your back is kept in the part of your save that survives a death, so with
+  `keep_inventory` it stays on after a respawn and a reload too.
+- The bag's item picture is the bag alone (lid shut when empty, open with a cat in it); its tooltip still says
+  what it holds, and the cat is still drawn alive on your back and in your hand.
+- The test command `/catpack` is gone, and the mod reads no file named by an environment variable.
+
+## 0.2.6 — 2026-11-24
 
 - Armour, the held item, the cape, elytra and worn layers (the cat backpack) stay on and follow the body in the
   mod's poses: swinging, flips, wall runs.

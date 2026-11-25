@@ -24,6 +24,11 @@
 //! Both channels are optional: a peer without the mod still connects, and simply has no bag.
 //! Nothing here trusts the client: an ask names slots only, and the server checks each against
 //! what it holds itself.
+//!
+//! Single player only: a client asks only its own world's server, which this same game runs
+//! (checked against the game's current connection at each send and each receipt),
+//! and that server tells only the player playing it here and hears only them (`crate::own_player`).
+//! A LAN guest and a dedicated server's players are neither told nor heard.
 
 use std::sync::OnceLock;
 
@@ -81,14 +86,24 @@ pub fn kind(message: &Compound) -> String {
     }
 }
 
-/// The server tells `player`. False for a player whose game has no such channel.
+/// The server tells `player`. False for a player whose game has no such channel, and for anyone
+/// but the world's own player (`crate::own_player`): nothing goes to a LAN guest or a player of
+/// a dedicated server.
 pub fn tell(host: &mut dyn mod_api::ServerHost, player: mod_api::PlayerRef, message: Compound) -> bool {
+    if !crate::own_player(player.uuid()) {
+        return false;
+    }
     let (Some(channel), Some(bytes)) = (TO_CLIENT.get(), encode(message)) else { return false };
     channel.send(host, player, &bytes).is_ok()
 }
 
-/// The client asks its server. False where the server has no such channel.
+/// The client asks its server. False where the server has no such channel, and on any connection
+/// but the integrated one this game owns, checked at the call (`crate::integrated_connection`):
+/// nothing is sent to another server, nor after the connection has ended.
 pub fn ask(host: &mut dyn mod_api::ClientHost, message: Compound) -> bool {
+    if !crate::integrated_connection(&*host) {
+        return false;
+    }
     let (Some(channel), Some(bytes)) = (TO_SERVER.get(), encode(message)) else { return false };
     channel.send(host, &bytes).is_ok()
 }

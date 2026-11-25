@@ -1,6 +1,6 @@
 id = "spider_man"
 name = "Spider-Man"
-version = "0.2.5"
+version = "0.2.8"
 description = "Web swinging, zips, wall running and parkour."
 authors = ["wyddy7"]
 api = "0.2"

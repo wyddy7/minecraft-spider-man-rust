@@ -1,15 +1,20 @@
 """The cat backpack as an item: 3D item models for the inventory, the hand and the ground.
 
 Writes, under native/hmod-src/assets/:
-  minecraft/atlases/items.json            the bag's texture and the game's cat textures join the
-                                          item atlas, so item models can be painted with them
-  spider_man/models/item/catpack*.json    the empty bag (lid shut), the bag with a grown cat, the
-                                          bag with a kitten; one child model per cat variant
-  spider_man/items/catpack*.json          the item definitions a stack names in `minecraft:item_model`
+  minecraft/atlases/items.json            the bag's own texture joins the item atlas, so the item
+                                          models can be painted with it
+  spider_man/models/item/catpack.json     the empty bag, lid shut
+  spider_man/models/item/catpack_full.json  a bag with a cat in it, lid open
+  spider_man/items/catpack*.json          the item definitions a stack names in `minecraft:item_model`:
+                                          `catpack`, and `catpack_<kind>_<variant>` for a bag with a
+                                          cat (the names a stack written since 0.2.6 carries), all
+                                          drawn as the bag
 
-The boxes, their places on the textures and the cat's pose are those of `bag()`, `cat()`,
-`kitten()` and the poses in native/hmod-src/catpack.rs: keep the two in step. An item model has
-no springs: the cat is held in its resting pose, its turns rounded to what one axis can say.
+The item models are the bag alone, the mod's own boxes on the mod's own texture: no cat in them
+and nothing of the game's. The cat is drawn only alive, from the game's own model of it, on a
+back and in a hand (native/hmod-src/catpack.rs); in the inventory the bag's tooltip says what it
+holds. The boxes and their places on the texture are those of `bag()` in catpack.rs: keep the
+two in step.
 
 Frames. The Rust model is the entity frame (+y down, the back towards +z, texels). An item model
 is +y up in a 16-texel cell; the bag's front faces south (+z), as flat items do. A point (x, y, z)
@@ -34,9 +39,8 @@ def cell(p):
     return [8 - p[0], 13 - p[1], 2.5 + p[2]]
 
 
-def faces(u, v, w, h, d, tex, turned=False, mirrored=False):
-    """Box UV at (u, v) for a w×h×d box, as item-model faces. `turned`: the box belongs to the
-    cat, which stands half round about y in the bag (its north face looks south)."""
+def faces(u, v, w, h, d, tex, mirrored=False):
+    """Box UV at (u, v) for a w×h×d box, as item-model faces."""
     kx, ky = 16 / tex[0], 16 / tex[1]
     u1, u2, u3, u4, u5 = u + d, u + d + w, u + d + w + w, u + d + w + d, u + d + w + d + w
     v1, v2 = v + d, v + d + h
@@ -51,14 +55,9 @@ def faces(u, v, w, h, d, tex, turned=False, mirrored=False):
         for name in box:
             a = box[name]
             box[name] = [a[2], a[1], a[0], a[3]]
-    # Which item face shows which of them: the half turn about z swaps west and east; the cat's
-    # own half turn about y swaps them back and swaps north and south.
-    if turned:
-        show = {"up": "top", "down": "bottom", "north": "south", "south": "north", "west": "west", "east": "east"}
-        caps_reversed = False
-    else:
-        show = {"up": "top", "down": "bottom", "north": "north", "south": "south", "west": "east", "east": "west"}
-        caps_reversed = True
+    # Which item face shows which of them: the half turn about z swaps west and east.
+    show = {"up": "top", "down": "bottom", "north": "north", "south": "south", "west": "east", "east": "west"}
+    caps_reversed = True
     out = {}
     for item_face, name in show.items():
         a = list(box[name])
@@ -84,16 +83,6 @@ def element(origin, size, f, texture, rotation=None):
 
 def bag_box(u, v, origin, size, mirrored=False, rotation=None):
     return element(origin, size, faces(u, v, size[0], size[1], size[2], BAG_TEX, mirrored=mirrored), "#bag", rotation)
-
-
-def cat_box(tex, u, v, origin, size, at, scale, rotation=None, f=None):
-    """A box of the cat's own frame (looking along -z), drawn at `at` of the bag at `scale`."""
-    x0 = at[0] - scale * (origin[0] + size[0])
-    z0 = at[2] - scale * (origin[2] + size[2])
-    place = [x0, at[1] + scale * origin[1], z0]
-    extent = [scale * size[0], scale * size[1], scale * size[2]]
-    f = f or faces(u, v, size[0], size[1], size[2], tex, turned=True)
-    return element(place, extent, f, "#cat", rotation)
 
 
 def shell():
@@ -129,53 +118,8 @@ def lid_shut():
 
 
 def lid_open():
-    """The lid standing up behind the cat, lining towards the front."""
+    """The lid standing up, lining towards the front: the bag is open, a cat in it."""
     return element([-3, -4, 1], [6, 5, 1], lid_faces("north", "south"), "#bag")
-
-
-def grown_cat():
-    tex, s = [64, 32], 0.6
-    head_at, turn = [0, -0.5, 5.8], ([0, -0.5, 5.8], "y", 22.5)
-    paw = {"uv": [42 * 16 / 64, 9 * 16 / 32, 44 * 16 / 64, 12 * 16 / 32]}
-    tip = {"uv": [44 * 16 / 64, 0, 46 * 16 / 64, 1 * 16 / 32]}
-    edge = {"uv": [41 * 16 / 64, 9 * 16 / 32, 42 * 16 / 64, 12 * 16 / 32], "rotation": 90}
-
-    def paw_at(x, y, z):
-        f = {"up": dict(paw), "down": dict(paw), "south": dict(tip), "north": dict(tip), "west": dict(edge), "east": dict(edge)}
-        return element([x - 0.6, y, z], [1.2, 0.6, 1.8], f, "#cat", ([x, y, z], "x", 22.5))
-
-    return [
-        cat_box(tex, 23, 3, [-2, -5, -1.5], [4, 5, 3], [0, 4, 5.0], s),
-        cat_box(tex, 0, 0, [-2.5, -2, -2.5], [5, 4, 5], head_at, s, turn),
-        cat_box(tex, 0, 24, [-1.5, 0, -3.5], [3, 2, 2], head_at, s, turn),
-        cat_box(tex, 0, 10, [-2, -3, 0.5], [1, 1, 2], head_at, s, turn),
-        cat_box(tex, 6, 10, [1, -3, 0.5], [1, 1, 2], head_at, s, turn),
-        paw_at(-0.8, 0.5, 6.3),
-        paw_at(0.8, 0.4, 6.2),
-    ]
-
-
-def kitten():
-    tex, s = [32, 32], 0.5
-    head_at, turn = [0, 0.2, 5.7], ([0, 0.2, 5.7], "y", 22.5)
-    k = 16 / 32
-
-    def r(a, b, c, d):
-        return {"uv": [a * k, b * k, c * k, d * k]}
-
-    # The trunk's faces, cut from the front end of the texture's lying body (as `kitten()` lays them).
-    body = {
-        "south": r(11, 15, 15, 11), "north": r(7, 15, 11, 11),
-        "west": {**r(3, 15, 7, 18), "rotation": 90}, "east": {**r(11, 15, 15, 18), "rotation": 270},
-        "up": r(7, 15, 11, 18), "down": r(11, 8, 15, 11),
-    }
-    return [
-        cat_box(tex, 0, 8, [-2, -4, -1.5], [4, 4, 3], [0, 3, 5.0], s, f=body),
-        cat_box(tex, 0, 0, [-2.5, -2, -2], [5, 4, 4], head_at, s, turn),
-        cat_box(tex, 18, 3, [-1.5, 0, -3], [3, 2, 1], head_at, s, turn),
-        cat_box(tex, 18, 0, [-2, -3, 0], [1, 1, 2], head_at, s, turn),
-        cat_box(tex, 24, 0, [1, -3, 0], [1, 1, 2], head_at, s, turn),
-    ]
 
 
 # How the item sits in each place it is drawn. The bag's front faces south.
@@ -219,26 +163,24 @@ def main():
     bag = "spider_man:entity/catpack"
     write(ASSETS / "minecraft/atlases/items.json", {"sources": [
         {"type": "minecraft:single", "resource": bag},
-        {"type": "minecraft:directory", "source": "entity/cat", "prefix": "entity/cat/"},
     ]})
     models = ASSETS / "spider_man/models/item"
     items = ASSETS / "spider_man/items"
+    # Models of earlier versions (a cat in the item model) are gone: only the bag's are written.
+    for old in models.glob("catpack*.json"):
+        old.unlink()
+    for old in items.glob("catpack*.json"):
+        old.unlink()
     write(models / "catpack.json", {
         "textures": {"bag": bag, "particle": bag}, "display": DISPLAY, "elements": shell() + [lid_shut()],
     })
+    write(models / "catpack_full.json", {
+        "textures": {"bag": bag, "particle": bag}, "display": DISPLAY, "elements": shell() + [lid_open()],
+    })
     write(items / "catpack.json", item("spider_man:item/catpack"))
-    for kind, parts, suffix in [("cat", grown_cat(), ""), ("kitten", kitten(), "_baby")]:
-        write(models / f"catpack_{kind}.json", {
-            "textures": {"bag": bag, "particle": bag}, "display": DISPLAY,
-            "elements": shell() + [lid_open()] + parts,
-        })
+    for kind in ["cat", "kitten"]:
         for variant in VARIANTS:
-            name = f"catpack_{kind}_{variant}"
-            write(models / f"{name}.json", {
-                "parent": f"spider_man:item/catpack_{kind}",
-                "textures": {"cat": f"minecraft:entity/cat/cat_{variant}{suffix}"},
-            })
-            write(items / f"{name}.json", item(f"spider_man:item/{name}"))
+            write(items / f"catpack_{kind}_{variant}.json", item("spider_man:item/catpack_full"))
     print(models)
 
 
