@@ -4,6 +4,7 @@
 //! Z zips to the aimed point with the body along the web.
 use super::{P, UP, axis, key, pick_anchor, web};
 use crate::sense::Sense;
+use crate::swing_anim as anim;
 use horizon_mod_sdk::motion::{self, PartPose, Rope};
 use std::f32::consts::{PI, TAU};
 
@@ -93,8 +94,8 @@ const GROUND_FRICTION: f64 = 0.546;
 /// does; off a hand vault or a climb, enough lift that the flip has time.
 const ARC_GRAVITY: f64 = 0.05;
 const DROP_GRAVITY: f64 = 0.08;
-/// Ticks the drop with the flip should take (`AM6jwca0Akg` 171.6–171.9 s,
-/// 151.5–151.9 s: ~0.4 s).
+/// Ticks the drop with the flip should take (measured:
+/// about 0.4 s).
 const FLIP_DROP: f64 = 8.0;
 /// The speed over a short obstacle, at least.
 const OVER_STEP: f64 = 0.32;
@@ -131,10 +132,76 @@ const WALL_KEEP: f64 = 0.9;
 const FLIP_TICKS: u32 = 14;
 /// How much of the way to the new pose each tick covers.
 const EASE: f32 = 0.35;
+/// A change of the kind of pose in flight (hanging, a measured swing, what follows its release) is eased across
+/// for this many ticks, this much of the way each.
+const SEAM_TICKS: u32 = 6;
+/// Where a pose starts or ends, the body turns no more than this a tick (radians), and a part's angle no more
+/// than this: a pose that starts far from the last one is caught up with over a few ticks, never in one. A take
+/// in full play is not held to it: its timing is its author's.
+const MAX_TURN: f64 = 0.7;
+const MAX_PART_STEP: f32 = 1.1;
+/// How far the body on a web leans from the line of the swing to where the web is stuck (0..1).
+const WEB_LEAN: f64 = 0.25;
+/// The body on a web tips fore or aft from the rope by no more than this (radians).
+const BODY_LEAN: f64 = 0.6;
+
+/// How much of the trunk on the web is the measured one (1) rather than the rule «the body stands along the rope»
+/// (0). In the footage the body lies along the flight under the web hand, or is already head down at the release.
+const TRUNK_ON_WEB: f64 = 0.0;
+/// A web shot out of the air: for this many ticks the web arm goes to the anchor by `SHOT_REACH` a tick (it eased
+/// there over the cross-fade, which read as a drift, not a shot).
+const SHOT_SNAP: usize = 3;
+const SHOT_REACH: f32 = 0.6;
+/// Free flight with no take in play: the body lies along the flight path (a dive when falling forward, level when
+/// flying level) instead of the one spread-eagle. Level speed below `GLIDE_SPEED` (blocks a tick) keeps the
+/// spread-eagle: a slow or near-vertical fall has no path to lie along.
+const GLIDE_SPEED: f64 = 0.25;
+const GLIDE_HOLD: u32 = 14;
+/// The trunk follows the path's pitch within these bounds (head down, head up; radians): the measured dive holds
+/// at 45 to 55 degrees, never vertical.
+const GLIDE_PITCH: (f64, f64) = (0.96, 0.26);
+/// How fast the body comes round to the path, a tick: the measured tip-over takes about 0.8 s.
+const GLIDE_EASE: f32 = 0.14;
+/// The measured flight's rows the limbs drift between while gliding (its dive, before the flare at the end).
+const GLIDE_ROWS: (f32, f32) = (9.0, 17.0);
+/// Takes whose release, when it throws the player upward, plays as the launch the footage shows: feet first and
+/// head down while rising, a slow arch onto the belly, then a prone glide.
+const AFTER_LAUNCH: [bool; 9] = [false, false, false, true, false, false, true, false, false];
+/// The take the launch is played from. Take 3 measured badly (its body leans 27-64 degrees sideways), so both
+/// launches play take 6: its limbs and its body's turn since the release, then the glide before the next web of
+/// the same flight (`swing_anim::AIR`).
+const LAUNCH_TAKE: usize = 6;
+/// Upward speed at the release (blocks a tick) from which a release counts as a launch.
+const LAUNCH_RISE: f64 = 0.55;
+/// Takes whose own after-block turns the body head down. They follow a release only when it rises at least
+/// `INVERT_RISE` (blocks a tick); a flatter or falling release goes on with one of `LEVEL_TAKES` instead.
+const INVERTING: [bool; 9] = [false, false, true, true, false, true, true, false, true];
+const INVERT_RISE: f64 = 0.2;
+const LEVEL_TAKES: [usize; 4] = [0, 1, 4, 7];
+/// The head's angle at the release, in the plane of the flight: straight down is a quarter turn below ahead;
+/// the measured trunk leans 20 degrees past it, head back.
+const LAUNCH_START: f64 = -1.92;
+/// The measured limbs are averaged over this many ticks either side.
+const LAUNCH_SMOOTH: usize = 1;
+const LEAN_EASE: f64 = 0.3;
+/// A web stuck further than this to a side (blocks) is taken with that side's hand.
+const WEB_SIDE: f64 = 0.5;
+/// The head turns no faster than this share of the way a tick, and no further than this (radians).
+const HEAD_EASE: f32 = 0.4;
+const HEAD_PITCH: f64 = 1.1;
+const HEAD_TURN: f64 = 1.0;
+/// A swing's flat direction follows the flight this much a tick, while the flat speed is over this.
+const HEADING_EASE: f64 = 0.15;
+const HEADING_SPEED: f64 = 0.15;
+/// Game ticks a second.
+const TICKS_PER_SEC: f32 = 20.0;
 /// A pose left on the ground eases out for at most this many ticks.
-const EASE_OUT_TICKS: u32 = 8;
+const EASE_OUT_TICKS: u32 = 10;
 
 struct Web {
+    /// The tick the web was shot, and whether it was shot out of the air: the shot's arm thrust plays from it.
+    shot_at: u32,
+    shot_in_air: bool,
     /// Where the web is stuck (drawn), and where the swing hangs from: the
     /// anchor moved sideways over the street, into the plane of flight.
     anchor: P,
@@ -147,6 +214,21 @@ struct Web {
     flight: u32,
     /// Ticks since it bit: the web is elastic at first.
     held: u32,
+    /// The measured swing played on this web (`swing_anim.rs`): which take, the rope's angle from the vertical
+    /// (towards the direction of flight) when it bit and on the last tick, and the tick the kick started.
+    variant: usize,
+    theta0: f32,
+    theta_prev: f32,
+    kick_at: Option<u32>,
+    /// The downswing's row when the kick began: the kick is blended in from it.
+    kick_from: f32,
+    /// The body's fore / aft tip from the rope, followed a part of the way each tick.
+    lean: f64,
+    /// The flat direction the swing goes, followed slowly: the body's front and the arc's angle are read against
+    /// it, not against the speed of the moment (which fades and turns at the top of the arc).
+    heading: Option<P>,
+    /// The take is played mirrored, the web on the left hand: decided as the web bites, by the side it is stuck on.
+    mirror: Option<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -157,14 +239,14 @@ enum Phase {
     Fall,
     /// Running up a wall, toward the unit direction of the wall.
     WallRun(P),
-    /// Smacked into a wall too fast (Web of Shadows): stuck flat for a
+    /// Smacked into a wall too fast: stuck flat for a
     /// moment, then sliding off; ticks so far.
     Slap(P, u32),
     /// Over an obstacle on the ground: the move, past the rise yet, ticks.
     Vault(Move, bool, u32),
 }
 
-/// Ground parkour by the obstacle's height (`AM6jwca0Akg`, video-spec
+/// Ground parkour by the obstacle's height (video-spec
 /// "Ground parkour"): a step / speed vault over ~1 block, a hand vault over
 /// ~2, a run up the face over 3 and more.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -237,7 +319,7 @@ const WALL_GAP: f64 = 0.3;
 /// the wall.
 /// The body's turn off the wall (radians from upright): the torso low over
 /// the wall, ~25 degrees from it, leaning into the run (from a sketch,
-/// 2026-10-28; Spider-Man 2 426.5–428.9 s).
+/// 2026-10-28).
 /// Standing off the wall (the body perpendicular to it), the lean into a
 /// full run (radians), and limb swing per block walked (Minecraft's walk
 /// animation runs ~0.67 radians per 1/4 block of movement).
@@ -280,8 +362,7 @@ const GROUND_TUG_MAX: f64 = 0.8;
 pub struct Spidey {
     /// How long a web or a zip line flies before it bites, as a share of
     /// its natural flight (`/swingmode delay`): 1 = the reference's 6–8
-    /// frames, 0 = it bites on the next tick. Default half: Spider-Man 2
-    /// itself cuts the wait by about that much.
+    /// frames, 0 = it bites on the next tick. Default half.
     pub web_delay: f64,
     /// How much past `MAX_SPEED` a long flight may go, as a share (`/swingmode speed`, percent there).
     pub long_flight_extra: f64,
@@ -293,6 +374,44 @@ pub struct Spidey {
     cam_long: Option<bool>,
     /// A phase whose pose is held for checking (`/swingmode pose`).
     debug: Option<Phase>,
+    /// On the line, play a swing from the measured takes instead of the one fixed pose (`/swingmode anim`).
+    pub swing_anim: bool,
+    /// `/swingmode row V R`: stand in row R of swing variant V, to check the converted angles by eye.
+    pub anim_debug: Option<(usize, usize)>,
+    /// `/swingmode take N`: every web plays take N, to check the takes one by one.
+    pub anim_take: Option<usize>,
+    /// Bench view: turn the held row's model by this many degrees from the player's facing (90 = its right side to the camera).
+    pub anim_debug_turn: f32,
+    /// The body's turn in flight (world from model axes, about the middle), eased as one rotation from pose to
+    /// pose; `rot_live` while it is what the model shows, and the facing it gives the renderer.
+    rot: M,
+    rot_live: bool,
+    anim_facing: Option<f32>,
+    /// Which kind of pose played last tick, and the ticks left to ease across a change of kind.
+    source: u8,
+    seam: u32,
+    /// The facing and twist the renderer got last tick.
+    sent: (Option<f32>, f32),
+    /// The web hand this tick (from the feet), where the rope is drawn from.
+    anim_hand: Option<P>,
+    anim_variant: Option<usize>,
+    /// The take on the web, and what follows its release, is mirrored.
+    anim_mirror: bool,
+    /// What follows a release, in play: the take, the tick it started, the body's turn at the release.
+    after: Option<(usize, u32, M)>,
+    /// What a take goes on with once its after-block has played out (`swing_anim::CONT`): the take, the tick it
+    /// started, the body's turn it started from.
+    cont: Option<(usize, u32, M)>,
+    /// Free flight: ticks in a row with too little level speed to glide, and the last heading it had. The
+    /// spread-eagle waits `GLIDE_HOLD` such ticks: flashed for a moment (off a wall slap, at the top of an arc) it
+    /// threw the arms out and back.
+    slow: u32,
+    glide_ahead: P,
+    /// The release in play is a launch (`AFTER_LAUNCH`): the body's turn the measured turn starts from, feet
+    /// first along the flight at the release.
+    launch: Option<M>,
+    /// The level heading the release in play left with: the measured trunk after it is laid in that plane.
+    after_ahead: P,
     ground_start: bool,
     web: Option<Web>,
     zip: Option<P>,
@@ -383,6 +502,25 @@ impl Default for Spidey {
             cam_blend: 0.0,
             cam_long: None,
             debug: None,
+            swing_anim: true,
+            anim_debug: None,
+            anim_take: None,
+            anim_debug_turn: 0.0,
+            rot: IDENTITY,
+            rot_live: false,
+            source: 0,
+            seam: 0,
+            sent: (None, 0.0),
+            anim_facing: None,
+            anim_hand: None,
+            anim_variant: None,
+            anim_mirror: false,
+            after: None,
+            launch: None,
+            slow: 0,
+            glide_ahead: P::new(0.0, 0.0, 1.0),
+            cont: None,
+            after_ahead: P::new(0.0, 0.0, 1.0),
             ground_start: false,
             web: None,
             zip: None,
@@ -507,6 +645,20 @@ fn arc_length(from: P, to: P, height: f64) -> f64 {
 }
 
 impl Spidey {
+    /// The renderer turns the model by roll (z), then pitch (x), then the facing (y, 180 - yaw), see `body_point`.
+    /// Split `m` into those, taking of the two equal splits the one nearest the last tick's (no 180 jumps).
+    fn place(&self, m: [[f64; 3]; 3], yaw: f32) -> ([f32; 2], f32) {
+        let p = (-m[1][2]).clamp(-1.0, 1.0).asin();
+        let q = m[1][0].atan2(m[1][1]);
+        let t = m[0][2].atan2(m[2][2]);
+        let near = |a: f64, b: f64| ((a - b + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI).abs();
+        let prev = (f64::from(self.body[0]), f64::from(self.body[1]), f64::from(180.0 - self.anim_facing.unwrap_or(yaw)).to_radians());
+        let alt = (std::f64::consts::PI - p, q + std::f64::consts::PI, t + std::f64::consts::PI);
+        let cost = |c: (f64, f64, f64)| near(c.0, prev.0) + near(c.1, prev.1) + near(c.2, prev.2);
+        let (p, q, t) = if cost(alt) < cost((p, q, t)) { alt } else { (p, q, t) };
+        let unwrap = |a: f64, b: f64| b + (a - b + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+        ([unwrap(p, prev.0) as f32, unwrap(q, prev.1) as f32], (180.0 - t.to_degrees()) as f32)
+    }
     /// The roof run: on the ground after a fast landing, W keeps the speed
     /// along the view, a low block is hopped, Space leaps off.
     fn roof_run(&mut self, state: &Sense, look: P) -> Option<P> {
@@ -612,7 +764,7 @@ impl Spidey {
         if self.web.is_some() || self.zip.is_some() || !key(state, "KeyW") {
             return;
         }
-        // R held (PS4's R2) is the parkour run, W the direction: walking,
+        // R held is the parkour run, W the direction: walking,
         // running, or pressed against the face from a stop. Without R the
         // ground is vanilla (doors, steps); sneaking never vaults.
         if !key(state, "KeyR") || key(state, "ShiftLeft") || state.profile.is_empty() || look.flat().len() < 0.1 {
@@ -663,7 +815,7 @@ impl Spidey {
         let after = state.profile.get(first + on_top).copied().flatten();
         // A higher step right behind (stoops, a parapet then a roof unit):
         // land on this one and go on from there, as the reference chains
-        // pallets → dumpster (146.6–147.1 s).
+        // pallets → dumpster.
         let higher = after.is_some_and(|h| h > top);
         let ends = first + on_top < state.profile.len() && !higher;
         let length = 0.5 * on_top as f64;
@@ -795,7 +947,7 @@ impl Spidey {
                     self.asked = Some(out);
                     return Some(out);
                 }
-                // A forward flip on the drop (SUV 171.6, truck bed 151.5),
+                // A forward flip on the drop,
                 // a little lift so it has time to turn; the drop's length
                 // from the height over the ground the run started on.
                 let fall = h.max(0.5);
@@ -878,9 +1030,9 @@ impl Spidey {
                     self.overhang = Some((w, 0));
                     self.phase = Phase::Flip(0);
                 }
-                // On the wall WASD walk it as a floor (Web of Shadows): W up,
+                // On the wall WASD walk it as a floor: W up,
                 // S down, A/D along; nothing held clings. R held runs, as on
-                // the ground (PS4's R2): faster, and up with no key; letting
+                // the ground: faster, and up with no key; letting
                 // go walks again, only Space leaves the wall. Minecraft's
                 // sprint runs too: Ctrl, or W pressed twice quickly.
                 let w_down = key(state, "KeyW");
@@ -995,6 +1147,181 @@ fn wrap_angle(a: f32) -> f32 {
     (a + PI).rem_euclid(TAU) - PI
 }
 
+/// A limb's direction in model axes (x right, y up, z back) from its (xRot, zRot), the convention of the measured
+/// tables (`swing_anim.rs`): swung forward by -xRot from hanging down, then out to its side by zRot.
+fn limb_dir(xrot: f32, zrot: f32, side: f32) -> P {
+    let (a, b) = (f64::from(-xrot), f64::from(zrot * side));
+    P::new(a.cos() * b.sin() * f64::from(side), -a.cos() * b.cos(), -a.sin()).norm()
+}
+
+/// The right arm's (xRot, zRot) that points it along `d` (model axes), the inverse of `limb_dir`: of the two
+/// pairs that give the direction, the one nearer the angles it had.
+fn limb_angles(d: P, last: [f32; 3]) -> (f32, f32) {
+    let a = (-d.z).clamp(-1.0, 1.0).asin();
+    let pairs = [(-a, d.x.atan2(-d.y)), (-(std::f64::consts::PI - a), (-d.x).atan2(d.y))];
+    let far = |p: &(f64, f64)| {
+        f64::from(wrap_angle(p.0 as f32 - last[0]).abs()) + f64::from(wrap_angle(p.1 as f32 - last[2]).abs())
+    };
+    let p = if far(&pairs[0]) <= far(&pairs[1]) { pairs[0] } else { pairs[1] };
+    (p.0 as f32, p.1 as f32)
+}
+
+fn lerp_row<const N: usize>(rows: &[[f32; 8]; N], r: f32) -> [f32; 8] {
+    let r = r.clamp(0.0, (N - 1) as f32);
+    let (i, f) = (r.floor() as usize, r.fract());
+    let (a, b) = (rows[i], rows[(i + 1).min(N - 1)]);
+    std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f)
+}
+
+/// One value read between the rows of a table.
+fn lerp1<const N: usize>(rows: &[f32; N], r: f32) -> f32 {
+    let r = r.clamp(0.0, (N - 1) as f32);
+    let (i, f) = (r.floor() as usize, r.fract());
+    rows[i] + (rows[(i + 1).min(N - 1)] - rows[i]) * f
+}
+
+/// The body's turn for a trunk at angle `th` in the plane of the flight heading `ahead` (level): 0 = head ahead
+/// and belly down, a quarter turn up = upright facing ahead, a quarter turn down = head down, belly back. The
+/// measured trunk angles (`swing_anim::TRUNK_*`) are in this frame.
+fn plane_turn(ahead: P, th: f64) -> M {
+    let (head, back) = (ahead * th.cos() + UP * th.sin(), UP * th.cos() - ahead * th.sin());
+    let right = P::new(-ahead.z, 0.0, ahead.x);
+    [[right.x, head.x, back.x], [right.y, head.y, back.y], [right.z, head.z, back.z]]
+}
+
+/// The same limb direction as `target`, written as the pair of angles nearest to the ones the limb shows now.
+/// A direction has two such pairs; rows from different tables may use different ones, and easing from one to the
+/// other angle by angle swung the limb through a wide arc at every join (the arm that jerked in flight).
+fn nearest_angles(name: &str, target: [f32; 3], last: [f32; 3]) -> [f32; 3] {
+    if name == "head" || target[1] != 0.0 {
+        return target;
+    }
+    let side: f32 = if name.starts_with("left") { -1.0 } else { 1.0 };
+    let d = limb_dir(target[0], target[2], side);
+    let (x, z) = limb_angles(P::new(d.x * f64::from(side), d.y, d.z), [last[0], last[1], last[2] * side]);
+    [x, 0.0, z * side]
+}
+
+fn limb_parts(r: &[f32]) -> Vec<(&'static str, [f32; 3])> {
+    vec![
+        ("right_arm", [r[0], 0.0, r[1]]),
+        ("left_arm", [r[2], 0.0, r[3]]),
+        ("right_leg", [r[4], 0.0, r[5]]),
+        ("left_leg", [r[6], 0.0, r[7]]),
+    ]
+}
+
+/// The body turn (world from model axes) that lays the model-space `arm` along the world `rope` and turns the
+/// model's front (-z) as close as it can to `travel`.
+fn align(arm: P, rope: P, travel: P) -> [[f64; 3]; 3] {
+    let frame = |a: P, f: P| {
+        let a = a.norm();
+        let mut b = f - a * f.dot(a);
+        if b.len() < 1e-6 {
+            b = P::new(0.0, 1.0, 0.0) - a * a.y;
+        }
+        let b = b.norm();
+        (a, b, a.cross(b))
+    };
+    let (e1, e2, e3) = frame(arm, P::new(0.0, 0.0, -1.0));
+    let (w1, w2, w3) = frame(rope, travel);
+    let col = |p: P| [p.x, p.y, p.z];
+    let (l, w) = ([col(e1), col(e2), col(e3)], [col(w1), col(w2), col(w3)]);
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| w[k][i] * l[k][j]).sum()))
+}
+
+/// Where a pose puts the body: the pitch and roll of the old poses (the facing is the view's or the phase's), or
+/// a whole turn.
+#[derive(Clone, Copy)]
+enum Place {
+    Angles([f32; 2]),
+    Turn(M),
+}
+
+/// The head's (xRot, yRot) that looks along the world direction `d` from a body turned by `m`, within what a
+/// neck allows; a direction behind the back only tips the head.
+fn look(m: M, d: P) -> [f32; 3] {
+    let l = P::new(
+        m[0][0] * d.x + m[1][0] * d.y + m[2][0] * d.z,
+        m[0][1] * d.x + m[1][1] * d.y + m[2][1] * d.z,
+        m[0][2] * d.x + m[1][2] * d.y + m[2][2] * d.z,
+    );
+    let up = l.y.clamp(-1.0, 1.0).asin().clamp(-HEAD_PITCH, HEAD_PITCH);
+    let turn = if l.z < 0.2 { l.x.atan2(-l.z).clamp(-HEAD_TURN, HEAD_TURN) } else { 0.0 };
+    [-(up as f32), turn as f32, 0.0]
+}
+
+/// A turn as a matrix: world from model axes (x right, y up, z back).
+type M = [[f64; 3]; 3];
+const IDENTITY: M = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// The turn the renderer makes of a pitch, a roll and a facing: roll (z), then pitch (x), then 180 - facing (y).
+fn euler_mat(body: [f32; 2], facing: f32) -> M {
+    let (p, r, t) = (f64::from(body[0]), f64::from(body[1]), f64::from(180.0 - facing).to_radians());
+    let rz = [[r.cos(), -r.sin(), 0.0], [r.sin(), r.cos(), 0.0], [0.0, 0.0, 1.0]];
+    let rx = [[1.0, 0.0, 0.0], [0.0, p.cos(), -p.sin()], [0.0, p.sin(), p.cos()]];
+    let ry = [[t.cos(), 0.0, t.sin()], [0.0, 1.0, 0.0], [-t.sin(), 0.0, t.cos()]];
+    mat_mul(ry, mat_mul(rx, rz))
+}
+
+fn mat_quat(m: M) -> [f64; 4] {
+    let t = m[0][0] + m[1][1] + m[2][2];
+    if t > 0.0 {
+        let s = (t + 1.0).sqrt() * 2.0;
+        return [0.25 * s, (m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s];
+    }
+    let i = if m[0][0] >= m[1][1] && m[0][0] >= m[2][2] { 0 } else if m[1][1] >= m[2][2] { 1 } else { 2 };
+    let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+    let s = (1.0 + m[i][i] - m[j][j] - m[k][k]).max(1e-12).sqrt() * 2.0;
+    let mut q = [0.0; 4];
+    q[0] = (m[k][j] - m[j][k]) / s;
+    q[i + 1] = 0.25 * s;
+    q[j + 1] = (m[j][i] + m[i][j]) / s;
+    q[k + 1] = (m[k][i] + m[i][k]) / s;
+    q
+}
+
+/// `k` of the way from turn `a` to turn `b`, the short way round, as one rotation (no axis-by-axis wobble).
+fn turn_step(a: M, b: M, k: f64, most: f64) -> M {
+    let (qa, mut qb) = (mat_quat(a), mat_quat(b));
+    let mut d: f64 = (0..4).map(|i| qa[i] * qb[i]).sum();
+    if d < 0.0 {
+        qb = qb.map(|v| -v);
+        d = -d;
+    }
+    let th = d.clamp(-1.0, 1.0).acos();
+    // `th` is half the angle between the turns: at most `most` of turn a step.
+    let k = if th * 2.0 * k > most { most / (th * 2.0) } else { k };
+    if k >= 1.0 {
+        return b;
+    }
+    let (wa, wb) = if th < 1e-4 { (1.0 - k, k) } else { (((1.0 - k) * th).sin() / th.sin(), (k * th).sin() / th.sin()) };
+    let q: [f64; 4] = std::array::from_fn(|i| qa[i] * wa + qb[i] * wb);
+    quat_mat(q.map(|v| v as f32))
+}
+
+/// A model-space point (from the feet) turned by the body turn `m` about the middle, like `body_point`.
+fn turn_point(m: [[f64; 3]; 3], local: P) -> P {
+    let mid = P::new(0.0, 0.9, 0.0);
+    let v = local - mid;
+    let r: [f64; 3] = std::array::from_fn(|i| m[i][0] * v.x + m[i][1] * v.y + m[i][2] * v.z);
+    P::new(r[0], r[1], r[2]) + mid
+}
+
+fn mat_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
+}
+
+fn quat_mat(q: [f32; 4]) -> [[f64; 3]; 3] {
+    let n = q.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>().sqrt().max(1e-9);
+    let [w, x, y, z] = q.map(|v| f64::from(v) / n);
+    [
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+        [2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)],
+        [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)],
+    ]
+}
+
 fn angle_step(from: f32, to: f32, k: f32) -> f32 {
     let d = (to - from + PI).rem_euclid(TAU) - PI;
     from + d * k
@@ -1003,7 +1330,7 @@ fn angle_step(from: f32, to: f32, k: f32) -> f32 {
 impl Spidey {
     /// The wall the camera turns onto during a long run, and how far it has
     /// turned (0..1). Whether it turns is decided once, as you land on the
-    /// wall (Web of Shadows: a tall wall turns it, a low one doesn't), and
+    /// wall (a tall wall turns it, a low one doesn't), and
     /// held until you leave it: the wall above changing on the way up (a
     /// window ledge, the last floors) never turns it back and forth.
     pub fn wall_camera(&mut self, state: &Sense) -> (Option<P>, f32) {
@@ -1103,7 +1430,7 @@ impl Spidey {
         let look = P::of(&state.look);
         let ahead = look.flat().norm();
         let side = axis(state, "KeyD") - axis(state, "KeyA");
-        // R (PS4's R2): in the air it shoots, let go on release; on the
+        // R: in the air it shoots, let go on release; on the
         // ground it is the parkour run and shoots nothing. Held from the
         // ground, the web goes once you are off it: a jump, or off an edge
         // with a real drop below and falling (not a curb, a hop, a vault
@@ -1137,7 +1464,7 @@ impl Spidey {
                 self.webs += 1;
                 let length = (anchor - chest).len();
                 let flight = flight_ticks((length / WEB_SPEED).clamp(2.0, MAX_FLIGHT), self.web_delay);
-                // Swing down the middle of the street (PS4: the arc is bent to
+                // Swing down the middle of the street (the arc is bent to
                 // keep you straight, walls push you out): hang from a point
                 // over your line of flight, keeping `WALL_SIDE` of the
                 // sideways offset to the wall.
@@ -1158,10 +1485,21 @@ impl Spidey {
                     flying: flight,
                     flight,
                     held: 0,
+                    // A different take on each web, in a fixed shuffle (no RNG in the mod).
+                    shot_at: self.ticks,
+                    shot_in_air: self.phase != Phase::Ground,
+                    variant: self.anim_take.unwrap_or((self.webs as usize * 5) % anim::SWINGS.len()),
+                    theta0: 0.0,
+                    theta_prev: 0.0,
+                    kick_at: None,
+                    kick_from: 0.0,
+                    lean: 0.0,
+                    heading: None,
+                    mirror: None,
                 });
                 self.zip = None;
                 self.driving = true;
-                // Just off the ground: a low arc that lifts you (PS4: the web
+                // Just off the ground: a low arc that lifts you (the web
                 // is shorter near the ground).
                 if drop < GROUND_ARC {
                     self.ground_start = true;
@@ -1198,7 +1536,7 @@ impl Spidey {
                 self.driving = false;
             }
         }
-        // Point launch (Spider-Man 2 `h_ToNJySgwE` 573.1–574.0 s, 429.8–430.1 s):
+        // Point launch:
         // at the zip's point, Space throws you forward and up, with a flip.
         if key(state, "Space") && !self.space_launch {
             if let (Some(_), Some((tangent, speed))) = (self.zip, self.zip_hold) {
@@ -1246,12 +1584,12 @@ impl Spidey {
             self.asked = None;
             return Some(v.clamp(self.speed_cap()));
         }
-        // Parkour: running up a wall (Spider-Man 2, the Empire State run,
-        // `h_ToNJySgwE` 425.6–433.8 s: ~3 s up the facade at ~20 m/s, a vault
+        // Parkour: running up a wall (the reference run,
+        // ~3 s up the facade at ~20 m/s, a vault
         // over the ledge, on up the next tier). Flying into a wall while you
         // face it starts the run; A/D move along it; the wall ending at the
         // top is a vault over the edge; Space kicks off it.
-        // Ground parkour by the obstacle's size (`AM6jwca0Akg` 145–172 s):
+        // Ground parkour by the obstacle's size:
         // one probe of the ground ahead picks a step, a hand vault or a run
         // up the face, and whether to land on top. Space is ignored meanwhile.
         let feet = chest - UP * super::CHEST;
@@ -1358,7 +1696,7 @@ impl Spidey {
                     // It bites: the rope is as long as it is now (you kept
                     // falling while it flew), and the tug works from here.
                     let now = (w.pivot - chest).len();
-                    // From the ground the arc's bottom stays above it (PS4:
+                    // From the ground the arc's bottom stays above it (
                     // the web is shorter near the ground), and shortens faster.
                     let (drop, cap) = if self.ground_start { (GROUND_DROP, GROUND_TUG_MAX) } else { (DROP, TUG_MAX) };
                     w.length = w.length.max(now);
@@ -1441,8 +1779,7 @@ impl Spidey {
         }
         if self.driving && state.on_ground && self.web.is_none() && self.zip.is_none() {
             self.driving = false;
-            // Landing fast: a roof run (Spider-Man 2 `h_ToNJySgwE` 430.8,
-            // 572.0–573.0 s), if W is held.
+            // Landing fast: a roof run, if W is held.
             let flat = v.flat().len();
             if flat > 0.45 {
                 self.roof_ticks = ROOF_TICKS;
@@ -1464,7 +1801,7 @@ impl Spidey {
         if let Some(run) = self.ground_run(state, v, ahead, side) {
             return Some(run);
         }
-        // Parkour in flight (Spider-Man 2 `rQVxkz7azJA` 87–91.5 s: low
+        // Parkour in flight (the reference: low
         // under an overpass, over and through trees): what is ahead along the
         // flight decides a hop over or a duck under.
         if self.driving && !state.on_ground && self.zip.is_none() {
@@ -1479,12 +1816,15 @@ impl Spidey {
         let mut out = Vec::new();
         // The raised hand; a flying web leaves the arm pointed at it.
         let hand = |to: P, flying: bool| {
-            if flying {
-                let shoulder = body_point(SHOULDER, self.body, yaw);
+            let point = |local: P| if self.rot_live { turn_point(self.rot, local) } else { body_point(local, self.body, yaw) };
+            if let Some(h) = self.anim_hand {
+                h
+            } else if flying {
+                let shoulder = point(SHOULDER);
                 let feet = chest - UP * super::CHEST;
                 shoulder + (to - (feet + shoulder)).norm() * 0.7
             } else {
-                body_point(HAND_UP, self.body, yaw)
+                point(HAND_UP)
             }
         };
         if let Some(w) = &self.web {
@@ -1547,8 +1887,80 @@ impl Spidey {
         }
         let v = P::of(&state.velocity);
         let bob = (self.ticks as f32 * 0.4).sin() * 0.08;
-        // Target: parts (xRot, yRot, zRot) and the body's pitch and roll.
-        let (parts, body, snap): (Vec<(&str, [f32; 3])>, [f32; 2], bool) = if let Some(t) = self.zip {
+        // In flight the body turns as one rotation, eased from pose to pose; on the ground and on a wall the
+        // facing is the phase's own.
+        let flight = matches!(self.phase, Phase::Air | Phase::Flip(_) | Phase::Fall);
+        let anim_on = flight && self.swing_anim;
+        // A web let go this tick: its take goes on with what follows the release.
+        if let Some(w) = self.web.as_ref() {
+            self.anim_variant = Some(w.variant);
+        } else if let Some(vi) = self.anim_variant.take() {
+            if anim_on && self.rot_live {
+                // What follows is chosen by how the release leaves: thrown well upward = the measured launch, whatever
+                // the take; an inverting take on a flat or falling release hands over to a level one.
+                let vi = if INVERTING[vi.min(8)] && v.y < INVERT_RISE { LEVEL_TAKES[self.webs as usize % LEVEL_TAKES.len()] } else { vi };
+                self.after = Some((vi, self.ticks, self.rot));
+                let flat = P::new(v.x, 0.0, v.z);
+                let f = f64::from(yaw).to_radians();
+                self.after_ahead = if flat.len() > 0.05 { flat.norm() } else { P::new(-f.sin(), 0.0, f.cos()) };
+                // The launch is one continuation among the takes' own (takes 3 and 6 only): played on every rising
+                // release it crowded the other takes out.
+                let launch = AFTER_LAUNCH[vi.min(AFTER_LAUNCH.len() - 1)] && v.y > LAUNCH_RISE && flat.len() > 0.05;
+                self.launch = launch.then(|| {
+                    // The head's angle in the plane of the flight (0 ahead, a quarter turn up). The body is
+                    // near vertical, head down, the moment the web goes (20 degrees off the vertical), whatever
+                    // way it flies; the belly faces back, against the flight.
+                    let (ahead, th) = (flat.norm(), LAUNCH_START);
+                    let (head, back) = (ahead * th.cos() + UP * th.sin(), UP * th.cos() - ahead * th.sin());
+                    let right = P::new(-ahead.z, 0.0, ahead.x);
+                    [[right.x, head.x, back.x], [right.y, head.y, back.y], [right.z, head.z, back.z]]
+                });
+            }
+        }
+        if let Some((si, t0, _)) = self.after {
+            // A launch lasts until the next web, the ground or a fast fall; any other release as long as its take.
+            let over = match self.launch {
+                Some(_) => (self.ticks - t0) as usize >= anim::SWINGS[LAUNCH_TAKE].after_ticks + anim::CONT_TICKS[LAUNCH_TAKE],
+                None => (self.ticks - t0) as usize >= anim::SWINGS[si].after_ticks,
+            };
+            if !anim_on || self.web.is_some() || over {
+                // Played out to its end in free flight: the take goes on with its own flight, from the turn the
+                // body has now, so nothing jumps at the join.
+                if anim_on && self.web.is_none() && self.launch.is_none() && anim::CONT_TICKS[si] > 0 {
+                    self.cont = Some((si, self.ticks, self.rot));
+                }
+                self.after = None;
+            }
+        }
+        if let Some((ci, t0, _)) = self.cont {
+            if !anim_on || self.web.is_some() || (self.ticks - t0) as usize >= anim::CONT_TICKS[ci] {
+                self.cont = None;
+            }
+        }
+        if self.after.is_none() {
+            self.launch = None;
+        }
+        self.anim_hand = None;
+        let ticks = self.ticks;
+        let held = if self.rot_live { Place::Turn(self.rot) } else { Place::Angles(self.body) };
+        // Where the head looks in flight: the way we fly.
+        let fly = if v.len() > 0.1 { Some(v.norm()) } else { None };
+        // Where the web arm reaches (from the feet), when a pose aims it.
+        let mut aim: Option<P> = None;
+        // The pose is played mirrored: left for right.
+        let mut mirror = false;
+        // A web was just shot out of the air: its arm snaps to the anchor instead of easing there.
+        let mut thrust = false;
+        // Target: parts (xRot, yRot, zRot), the body's turn, whether the pose is itself motion (no easing), and
+        // the kind of pose (a change of kind is eased across).
+        let (parts, place, snap, source): (Vec<(&str, [f32; 3])>, Place, bool, u8) = if let Some((vi, ri)) = self.anim_debug {
+            // Bench: the row under a vertical rope, front towards the player's facing.
+            let take = &anim::SWINGS[vi.min(anim::SWINGS.len() - 1)];
+            let r = take.line[ri.min(anim::LINE_ROWS - 1)];
+            let f = f64::from(yaw + self.anim_debug_turn).to_radians();
+            let m = align(limb_dir(r[0], r[1], 1.0), UP, P::new(-f.sin(), 0.0, f.cos()));
+            (limb_parts(&r), Place::Turn(m), true, 3)
+        } else if let Some(t) = self.zip {
             let dir = (t - chest).norm();
             (
                 vec![
@@ -1557,9 +1969,111 @@ impl Spidey {
                     ("right_leg", [0.15, 0.0, 0.05]),
                     ("left_leg", [0.15, 0.0, -0.05]),
                 ],
-                tilt(dir, yaw),
+                Place::Angles(tilt(dir, yaw)),
                 false,
+                0,
             )
+        } else if let Some(w) = self.web.as_mut().filter(|_| anim_on) {
+            // A swing in three parts: the web shot, then on the line the
+            // downswing and the upswing follow the position in the arc and the kick at the bottom plays in real
+            // time. The body is placed so that the web arm lies along the rope and the front faces along the arc.
+            // The body hangs on the line the swing turns about (over the flight), leaning a little to where the
+            // web is stuck; the web arm alone reaches all the way there. Laid whole along the web, the body
+            // rolled onto its side whenever the web was stuck off to one side.
+            let rope = ((w.pivot - chest).norm() * (1.0 - WEB_LEAN) + (w.anchor - chest).norm() * WEB_LEAN).norm();
+            let stuck = w.anchor - (chest - UP * super::CHEST);
+            let flat = P::new(v.x, 0.0, v.z);
+            let f = f64::from(yaw).to_radians();
+            let mut heading = w.heading.unwrap_or(if flat.len() > 0.1 { flat.norm() } else { P::new(-f.sin(), 0.0, f.cos()) });
+            if flat.len() > HEADING_SPEED {
+                let h = heading * (1.0 - HEADING_EASE) + flat.norm() * HEADING_EASE;
+                if h.len() > 1e-3 {
+                    heading = h.norm();
+                }
+            }
+            w.heading = Some(heading);
+            let take = &anim::SWINGS[w.variant];
+            let (tr_intro, tr_line) = (&anim::TRUNK_INTRO[w.variant], &anim::TRUNK_LINE[w.variant]);
+            let (row, trunk): ([f32; 8], f32) = if w.flying > 0 {
+                let x = 1.0 - w.flying as f32 / w.flight.max(1) as f32;
+                let r = x * (anim::INTRO_ROWS - 1) as f32;
+                (lerp_row(&take.intro, r), lerp1(tr_intro, r))
+            } else {
+                // The rope's angle from the vertical: positive while the anchor is still ahead (going down).
+                let theta = rope.dot(heading).atan2(rope.y) as f32;
+                if w.theta0 == 0.0 {
+                    w.theta0 = theta.abs().max(0.3);
+                    w.theta_prev = theta;
+                }
+                let omega = w.theta_prev - theta;
+                w.theta_prev = theta;
+                // The kick plays at the take's own speed.
+                let kick_secs = anim::KICK_SECS;
+                let half_kick = kick_secs * 0.5 * TICKS_PER_SEC;
+                let down = (1.0 - theta / w.theta0).clamp(0.0, 1.0) * (anim::DOWN_ROWS - 1) as f32;
+                if w.kick_at.is_none() && (theta <= 0.0 || (omega > 1e-3 && theta / omega <= half_kick)) {
+                    w.kick_at = Some(ticks);
+                    w.kick_from = down;
+                }
+                let up_rows = anim::LINE_ROWS - anim::DOWN_ROWS - anim::KICK_ROWS;
+                match w.kick_at {
+                    None => (lerp_row(&take.line, down), lerp1(tr_line, down)),
+                    Some(t0) => {
+                        let kt = (ticks - t0) as f32 / TICKS_PER_SEC;
+                        if kt < kick_secs {
+                            // The kick starts when the bottom is near, wherever the downswing's rows had got
+                            // to: it comes in from that row over its first half, not in one tick.
+                            let kr = anim::DOWN_ROWS as f32 + kt / kick_secs * (anim::KICK_ROWS - 1) as f32;
+                            let kick = lerp_row(&take.line, kr);
+                            let from = lerp_row(&take.line, w.kick_from);
+                            let x = (kt / (kick_secs * 0.5)).clamp(0.0, 1.0);
+                            let x = x * x * (3.0 - 2.0 * x);
+                            let (tk, tf) = (lerp1(tr_line, kr), lerp1(tr_line, w.kick_from));
+                            (std::array::from_fn(|i| from[i] + (kick[i] - from[i]) * x), tf + (tk - tf) * x)
+                        } else {
+                            let r = (anim::DOWN_ROWS + anim::KICK_ROWS) as f32 + (-theta / w.theta0).clamp(0.0, 1.0) * (up_rows - 1) as f32;
+                            (lerp_row(&take.line, r), lerp1(tr_line, r))
+                        }
+                    }
+                }
+            };
+            // The shot's thrust (measured, `swing_anim::SHOT`): from the tick the web leaves, laid over the take's
+            // rows and fading out, so the reach belongs to a real shot and never plays without one.
+            let since = (ticks - w.shot_at) as usize;
+            let row: [f32; 8] = if w.shot_in_air && since < anim::SHOT_TICKS {
+                let x = since as f32 / anim::SHOT_TICKS as f32;
+                let weight = 1.0 - x * x;
+                thrust = since < SHOT_SNAP;
+                std::array::from_fn(|i| angle_step(row[i], anim::SHOT[since][i], weight))
+            } else {
+                row
+            };
+            // Along the arc: square to the rope in the plane of the swing. It never fades or turns round with
+            // the speed, so the body holds still at the top of the arc.
+            let right = heading.cross(UP);
+            let along = rope.cross(right);
+            let along = if along.len() > 1e-3 { along.norm() } else { heading };
+            // The web hand is the one on the side the web is stuck on (the legs then sweep the other way); dead
+            // ahead, the takes alternate.
+            let off = (w.anchor - chest).dot(right);
+            let odd = w.variant % 2 == 1;
+            mirror = *w.mirror.get_or_insert(if off.abs() > WEB_SIDE { off < 0.0 } else { odd });
+            // The body stands along the rope, front along the arc, tipped fore or aft as the take's web arm was
+            // from its trunk, within bounds. (Laid by that arm outright, a take whose arm reached sideways put
+            // the whole body across the flight.)
+            let arm = limb_dir(row[0], row[1], 1.0);
+            // (Fading out as the arm leaves the overhead: its tip then says nothing of the trunk.)
+            let over = (arm.y / 0.6).clamp(0.0, 1.0);
+            let lean = arm.z.atan2(arm.y.max(1e-3)).clamp(-BODY_LEAN, BODY_LEAN) * over * over * (3.0 - 2.0 * over);
+            w.lean += (lean - w.lean) * LEAN_EASE;
+            let lean = w.lean;
+            // The trunk as measured against the vertical, in the plane of the flight; the rope's rule under it
+            // by `TRUNK_ON_WEB`.
+            let m = turn_step(align(P::new(0.0, lean.cos(), lean.sin()), rope, along), plane_turn(heading, f64::from(trunk)), TRUNK_ON_WEB, f64::INFINITY);
+            let mut parts = limb_parts(&row);
+            parts.push(("head", look(m, fly.unwrap_or(heading))));
+            aim = Some(stuck);
+            if w.flying > 0 { (parts, Place::Turn(m), false, 4) } else { (parts, Place::Turn(m), true, 1) }
         } else if let Some(w) = self.web.as_ref() {
             if w.flying > 0 {
                 // Shooting: the arm points at the anchor, the body as it was.
@@ -1571,8 +2085,9 @@ impl Spidey {
                         ("right_leg", [0.2, 0.0, 0.1]),
                         ("left_leg", [-0.2, 0.0, -0.1]),
                     ],
-                    self.body,
+                    held,
                     false,
+                    0,
                 )
             } else {
                 // Hanging along the rope: head toward the anchor, one arm up.
@@ -1584,12 +2099,95 @@ impl Spidey {
                         ("right_leg", [0.25, 0.0, 0.03]),
                         ("left_leg", [0.1, 0.0, -0.03]),
                     ],
-                    tilt(rope, yaw),
+                    Place::Angles(tilt(rope, yaw)),
                     false,
+                    0,
                 )
             }
+        } else if let (Some((_, t0, _)), Some(_)) = (self.after, self.launch) {
+            // Thrown upward off the web: the measured launch, its turn counted from a body laid feet first along
+            // the flight (not from the pose the release happened to have), then the measured glide.
+            let take = &anim::SWINGS[LAUNCH_TAKE];
+            let (t, n) = ((ticks - t0) as usize, take.after_ticks);
+            mirror = self.anim_mirror;
+            let side = if mirror { -1.0 } else { 1.0 };
+            let turn = |r: &[f32; 12]| quat_mat([r[8], r[9], r[10] * side, r[11] * side]);
+            // After the take's own tail, the take's own flight: one unbroken measured piece (the generic flight block
+            // stitched on here made the arms jump at the join and thrust at its end).
+            let cn = anim::CONT_TICKS[LAUNCH_TAKE];
+            let row = |k: usize| if k < n { take.after[k] } else { anim::CONT[LAUNCH_TAKE][(k - n).min(cn - 1)] };
+            let trunk = &anim::TRUNK_AFTER[LAUNCH_TAKE];
+            let m = if t < n {
+                plane_turn(self.after_ahead, f64::from(trunk[t]))
+            } else {
+                mat_mul(plane_turn(self.after_ahead, f64::from(trunk[n - 1])), turn(&row(t)))
+            };
+            let now = row(t);
+            let mut parts = Vec::with_capacity(5);
+            for (l, name) in ["right_arm", "left_arm", "right_leg", "left_leg"].into_iter().enumerate() {
+                let mut d = P::new(0.0, 0.0, 0.0);
+                // Within one block only.
+                let (lo, hi) = if t < n { (0, n - 1) } else { (n, n + cn - 1) };
+                for k in t.saturating_sub(LAUNCH_SMOOTH).max(lo)..=(t + LAUNCH_SMOOTH).min(hi) {
+                    let r = row(k);
+                    d = d + limb_dir(r[2 * l], r[2 * l + 1], 1.0);
+                }
+                let (x, z) = if d.len() > 1e-3 { limb_angles(d.norm(), [now[2 * l], 0.0, now[2 * l + 1]]) } else { (now[2 * l], now[2 * l + 1]) };
+                parts.push((name, [x, 0.0, z]));
+            }
+            if let Some(d) = fly {
+                parts.push(("head", look(m, d)));
+            }
+            (parts, Place::Turn(m), false, 5)
+        } else if let Some((ci, t0, m0)) = self.cont {
+            // The take's own flight after its tail, turned on from where the tail left the body.
+            let r = anim::CONT[ci][((ticks - t0) as usize).min(anim::CONT_TICKS[ci] - 1)];
+            mirror = self.anim_mirror;
+            let side = if mirror { -1.0 } else { 1.0 };
+            let m = mat_mul(m0, quat_mat([r[8], r[9], r[10] * side, r[11] * side]));
+            let mut parts = limb_parts(&r);
+            if let Some(d) = fly {
+                parts.push(("head", look(m, d)));
+            }
+            (parts, Place::Turn(m), true, 7)
+        } else if anim_on && matches!(self.phase, Phase::Air | Phase::Fall) && self.after.is_none() && {
+            let hs = (v.x * v.x + v.z * v.z).sqrt();
+            if hs > GLIDE_SPEED {
+                self.slow = 0;
+                self.glide_ahead = P::new(v.x / hs, 0.0, v.z / hs);
+            } else {
+                self.slow += 1;
+            }
+            self.slow < GLIDE_HOLD
+        } {
+            // Free flight: the trunk along the flight path, limbs from the measured flight, drifting slowly
+            // between its rows so the pose is never frozen.
+            let hs = (v.x * v.x + v.z * v.z).sqrt();
+            let ahead = self.glide_ahead;
+            let th = v.y.atan2(hs.max(GLIDE_SPEED)).clamp(-GLIDE_PITCH.0, GLIDE_PITCH.1);
+            let m = plane_turn(ahead, th);
+            mirror = self.anim_mirror;
+            let r = GLIDE_ROWS.0 + (GLIDE_ROWS.1 - GLIDE_ROWS.0) * (0.5 + 0.5 * (ticks as f32 * 0.12).sin());
+            let (i, f) = ((r.floor() as usize).min(anim::AIR_TICKS - 2), r.fract());
+            let (a, b) = (anim::AIR[i], anim::AIR[i + 1]);
+            let row: [f32; 8] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f);
+            let mut parts = limb_parts(&row);
+            parts.push(("head", look(m, if v.len() > 0.1 { v.norm() } else { ahead })));
+            (parts, Place::Turn(m), false, 6)
+        } else if let Some((si, t0, m0)) = self.after {
+            // After letting go: the same take's flip / dive / spread, the body turned as measured since the release.
+            let take = &anim::SWINGS[si];
+            let r = take.after[((ticks - t0) as usize).min(take.after_ticks - 1)];
+            mirror = self.anim_mirror;
+            let side = if mirror { -1.0 } else { 1.0 };
+            let m = mat_mul(m0, quat_mat([r[8], r[9], r[10] * side, r[11] * side]));
+            let mut parts = limb_parts(&r);
+            if let Some(d) = fly {
+                parts.push(("head", look(m, d)));
+            }
+            (parts, Place::Turn(m), true, 2)
         } else {
-            match self.phase {
+            let (parts, body, snap) = match self.phase {
                 Phase::Ground => {
                     // Back to the game's own animation: a pose still held
                     // eases out over a few ticks first (it snapped upright).
@@ -1603,13 +2201,22 @@ impl Spidey {
                         *a = a.map(wrap_angle);
                     }
                     self.ease_out += 1;
-                    let settled = self.body.iter().all(|a| a.abs() < 0.08)
-                        && self.shown.iter().all(|(_, a)| a.iter().all(|x| x.abs() < 0.15));
+                    // Out of a flight the body comes upright as one rotation, to the view's facing: the facing
+                    // alone snapped to it at the landing, half a turn in a tick after a tumble.
+                    let upright = if self.rot_live {
+                        let (a, b) = (mat_quat(self.rot), mat_quat(euler_mat([0.0, 0.0], yaw)));
+                        (0..4).map(|i| a[i] * b[i]).sum::<f64>().abs() > 0.9987
+                    } else {
+                        self.body.iter().all(|a| a.abs() < 0.08)
+                    };
+                    let settled = upright && self.shown.iter().all(|(_, a)| a.iter().all(|x| x.abs() < 0.15));
                     if settled || self.ease_out > EASE_OUT_TICKS {
                         self.ease_out = 0;
                         if !self.shown.is_empty() {
                             self.shown.clear();
                             self.body = [0.0; 2];
+                            self.rot_live = false;
+                            self.anim_facing = None;
                             motion::clear_pose();
                         }
                         return;
@@ -1645,7 +2252,7 @@ impl Spidey {
                     self.limb_phase += (speed * LIMB_PER_BLOCK).min(STRIDE_MAX_STEP);
                     // Walk → sprint: the swing grows from a walk's (1.4) to a
                     // sprint's, arms wider, and the body leans into the run
-                    // (SM2 426.5–428.9 s: chest well ahead of the feet).
+                    // (chest well ahead of the feet).
                     let walk = (speed / 0.3).min(1.0);
                     let run = ((speed - 0.3) / (WALL_CLIMB as f32 - 0.3)).clamp(0.0, 1.0);
                     let phase = self.limb_phase.cos();
@@ -1684,7 +2291,7 @@ impl Spidey {
                 ),
                 Phase::Vault(kind, over, t) => {
                     // By concept (Minecraft limbs have no knees or elbows,
-                    // decision 42), from `AM6jwca0Akg` 145.6–171.9 s.
+                    // decision 42).
                     let long = self.vault.is_some_and(|v| v.long);
                     let stride = (t as f32 * 0.9).cos();
                     match (kind, over) {
@@ -1774,9 +2381,51 @@ impl Spidey {
                         false,
                     )
                 }
-            }
+            };
+            (parts, Place::Angles(body), snap, 0)
         };
-        let k = if snap { 1.0 } else { EASE };
+        if source != self.source {
+            self.seam = SEAM_TICKS;
+        }
+        self.source = source;
+        // Across a change of kind: an even cross-fade, 1/6 of what is left, then 1/5, … so it starts gently.
+        let fade = if self.seam > 0 { 1.0 / self.seam as f32 } else { 1.0 };
+        let k = if snap { fade } else { EASE.min(fade) };
+        let k = if source == 6 { k.min(GLIDE_EASE) } else { k };
+        self.seam = self.seam.saturating_sub(1);
+        if matches!(source, 1 | 4) {
+            self.anim_mirror = mirror;
+        }
+        let mut parts = parts;
+        if mirror {
+            for (name, a) in &mut parts {
+                *name = match *name {
+                    "right_arm" => "left_arm",
+                    "left_arm" => "right_arm",
+                    "right_leg" => "left_leg",
+                    "left_leg" => "right_leg",
+                    other => other,
+                };
+                *a = [a[0], -a[1], -a[2]];
+            }
+        }
+        // In flight the body's facing is the pose's own, so the game's turn of the head (the view's against the
+        // body's) would put the face anywhere, on the back too: every pose in flight names the head.
+        let turning = flight || self.anim_debug.is_some() || (self.phase == Phase::Ground && self.rot_live);
+        let target = match place {
+            Place::Turn(m) => Some(m),
+            Place::Angles(b) if turning => Some(euler_mat(b, yaw)),
+            Place::Angles(_) => None,
+        };
+        if let Some(m) = target {
+            if !parts.iter().any(|(n, _)| *n == "head") {
+                let f = f64::from(yaw).to_radians();
+                let ahead = if matches!(self.phase, Phase::Flip(_) | Phase::Ground) { [0.0; 3] } else { look(m, P::new(-f.sin(), 0.0, f.cos())) };
+                parts.push(("head", ahead));
+            }
+        }
+        // A take in full play moves as fast as it was made; what starts or ends a pose is held back.
+        let held_back = !(matches!(source, 1 | 2 | 7) && snap && fade >= 1.0);
         let mut out = Vec::with_capacity(parts.len());
         for (name, target) in parts {
             let last = self
@@ -1784,14 +2433,58 @@ impl Spidey {
                 .iter()
                 .find(|(n, _)| n == name)
                 .map_or([0.0; 3], |(_, a)| *a);
+            let k = if name == "head" { k.min(HEAD_EASE) } else { k };
+            let target = if source != 0 { nearest_angles(name, target, last) } else { target };
             let a = [0, 1, 2].map(|i| angle_step(last[i], target[i], k));
+            let a = if turning && held_back { [0, 1, 2].map(|i| last[i] + (a[i] - last[i]).clamp(-MAX_PART_STEP, MAX_PART_STEP)) } else { a };
             out.push((name.to_string(), a));
         }
-        self.body = if snap {
-            body
+        if let Some(target) = target {
+            if !self.rot_live {
+                // From what the model showed last: the phase's own facing and twist (a wall), or the view's.
+                let (f, t) = self.sent;
+                let t = f64::from(t);
+                let twist = [[t.cos(), 0.0, t.sin()], [0.0, 1.0, 0.0], [-t.sin(), 0.0, t.cos()]];
+                self.rot = mat_mul(euler_mat(self.body, f.unwrap_or(yaw)), twist);
+            }
+            let most = if held_back { MAX_TURN } else { f64::INFINITY };
+            self.rot = turn_step(self.rot, target, f64::from(k), most);
+            self.rot_live = true;
+            let (body, facing) = self.place(self.rot, yaw);
+            self.body = body;
+            self.anim_facing = Some(facing);
+            if let Some(to) = aim {
+                // The web arm points from the shoulder the model shows to where the web is stuck, and the web
+                // leaves that hand.
+                let (side, name) = if mirror { (-1.0, "left_arm") } else { (1.0, "right_arm") };
+                let shoulder = P::new(SHOULDER.x * side, SHOULDER.y, SHOULDER.z);
+                let d = (to - turn_point(self.rot, shoulder)).norm();
+                let m = self.rot;
+                let l = P::new(
+                    (m[0][0] * d.x + m[1][0] * d.y + m[2][0] * d.z) * side,
+                    m[0][1] * d.x + m[1][1] * d.y + m[2][1] * d.z,
+                    m[0][2] * d.x + m[1][2] * d.y + m[2][2] * d.z,
+                );
+                let last = self.shown.iter().find(|(n, _)| n == name).map_or([0.0; 3], |(_, a)| *a);
+                let fs = side as f32;
+                let (x, z) = limb_angles(l, [last[0], last[1], last[2] * fs]);
+                let k = if thrust { fade.max(SHOT_REACH) } else { fade };
+                let a = [angle_step(last[0], x, k), angle_step(last[1], 0.0, k), angle_step(last[2], z * fs, k)];
+                if let Some(arm) = out.iter_mut().find(|(n, _)| n == name) {
+                    arm.1 = a;
+                }
+                self.anim_hand = Some(turn_point(self.rot, shoulder + limb_dir(a[0], a[2], fs) * 0.66));
+            }
         } else {
-            [angle_step(self.body[0], body[0], k), angle_step(self.body[1], body[1], k)]
-        };
+            let Place::Angles(body) = place else { unreachable!("only poses in flight turn the body as one rotation") };
+            self.body = if snap {
+                body
+            } else {
+                [angle_step(self.body[0], body[0], k), angle_step(self.body[1], body[1], k)]
+            };
+            self.rot_live = false;
+            self.anim_facing = None;
+        }
         self.shown = out;
         let parts: Vec<PartPose> = self
             .shown
@@ -1820,8 +2513,10 @@ impl Spidey {
                     (w * -(0.9 * s - WALL_GAP) + UP * (0.9 * s)).wit()
                 }),
             ),
+            _ if self.anim_facing.is_some() => (self.anim_facing, None),
             _ => (None, None),
         };
+        self.sent = (facing, twist);
         motion::set_pose(&parts, self.body[0], self.body[1], twist, facing, shift);
     }
 }

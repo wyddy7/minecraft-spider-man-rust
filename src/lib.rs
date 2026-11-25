@@ -8,7 +8,7 @@
 //! per tick sideways) never applies in flight, so speed carries from one
 //! swing to the next.
 //!
-//! - Web (Marvel's Spider-Man, 2018): hold R. The anchor is picked above and
+//! - Web: hold R. The anchor is picked above and
 //!   ahead from a fan of rays, biased by A/D; the swing is a pendulum with a
 //!   short tug when the web bites; with no A/D the arc is pulled straight
 //!   along the view; W pumps; letting go on the upswing throws you up and
@@ -25,6 +25,7 @@ use std::ops::{Add, Mul, Sub};
 
 mod sense;
 mod spidey;
+mod swing_anim;
 
 use sense::{Probe, Sense};
 
@@ -350,7 +351,7 @@ impl Swing {
                 BUTTON_DELAY,
                 format!("Web delay: {:.2}", self.spidey.web_delay),
             ),
-            text(10, "How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once."),
+            text(10, "How long a web flies before it bites: 1 the full flight, 0 at once."),
         ]);
     }
 
@@ -570,6 +571,9 @@ impl Mod for Swing {
                         .ok_or_else(|| format!("/swingmode view: {name} {range:?}, not {w}"))
                 })
             };
+            let words: Vec<&str> = words.collect();
+            let follow = words.last() == Some(&"follow");
+            let mut words = words.into_iter().filter(|w| *w != "follow");
             let distance = number(words.next(), "distance", 0.5..=20.0, VIEW_DISTANCE)?;
             let height = number(words.next(), "height", 0.0..=3.0, 1.0)?;
             let target = P::new(p.x, p.y + height, p.z);
@@ -578,9 +582,12 @@ impl Mod for Swing {
             let right = ahead.cross(UP).norm();
             let a = angle.to_radians();
             let at = target - ahead * (distance * a.cos()) + right * (distance * a.sin());
+            // `follow`: the view goes along with the player (a recording of a whole swing).
+            let feet = if follow { P::new(p.x, p.y, p.z) } else { P::new(0.0, 0.0, 0.0) };
             self.view = Some(motion::Camera::Fixed(motion::FixedCamera {
-                at: at.wit(),
-                look_at: target.wit(),
+                at: (at - feet).wit(),
+                look_at: (target - feet).wit(),
+                follow,
             }));
             return Ok(Some(format!(
                 "Fixed view at {angle:.0}°, {distance:.1} blocks, looking at {height:.1}: /swingmode view off"
@@ -624,6 +631,34 @@ impl Mod for Swing {
                 self.spidey.webs,
                 st.map(|s| s.profile.iter().map(|h| h.map_or(-9.0, |h| (h * 10.0).round() / 10.0)).collect::<Vec<_>>()),
                 self.spidey.vault_note
+            )));
+        }
+        if let Some(rest) = args.trim().strip_prefix("row") {
+            let n: Vec<f32> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            self.spidey.anim_debug = if n.len() >= 2 && n.iter().all(|x| x.is_finite()) { Some((n[0] as usize, n[1] as usize)) } else { None };
+            self.spidey.anim_debug_turn = n.get(2).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
+            let held = match self.spidey.anim_debug {
+                Some((take, row)) => format!("take {take}, row {row}"),
+                None => "off".to_string(),
+            };
+            return Ok(Some(format!("Swing row held: {held} (/swingmode row TAKE ROW, /swingmode row off)")));
+        }
+        if let Some(rest) = args.trim().strip_prefix("take") {
+            self.spidey.anim_take = rest.trim().parse::<usize>().ok().map(|n| n.min(8));
+            let take = self.spidey.anim_take.map_or("off, the takes alternate".to_string(), |n| n.to_string());
+            return Ok(Some(format!("Swing take: {take} (/swingmode take 0..8, /swingmode take off)")));
+        }
+        if let Some(rest) = args.trim().strip_prefix("anim") {
+            let rest = rest.trim();
+            match rest {
+                "on" => self.spidey.swing_anim = true,
+                "off" => self.spidey.swing_anim = false,
+                "" => {}
+                other => return Err(format!("/swingmode anim on|off, not {other}")),
+            }
+            return Ok(Some(format!(
+                "Swing animation: {} (/swingmode anim on|off)",
+                if self.spidey.swing_anim { "on" } else { "off" }
             )));
         }
         if let Some(rest) = args.trim().strip_prefix("pose") {

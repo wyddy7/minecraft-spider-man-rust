@@ -3,7 +3,7 @@
 ![Diving off a rooftop, web swinging down a street of towers, then a web pull that slaps into a wall](docs/swing.gif)
 
 Web swinging, zips, wall running and parkour for [Horizon](https://github.com/horizon-rust/horizon), Minecraft: Java
-Edition rewritten in Rust. Tuned against Marvel's Spider-Man 2 gameplay: momentum carries from swing to swing, walls
+Edition rewritten in Rust. Tuned by feel: momentum carries from swing to swing, walls
 are floors, rooftops are runways.
 
 A native Horizon mod, built from source by the Horizon launcher, plus a WebAssembly build of the same code. Fan-made.
@@ -64,7 +64,7 @@ for a guest of a LAN world it is not there yet.
 
 ## Status
 
-0.2.8: the native build has everything above, as a `.hmod` on Horizon's Nightly of 2026-11-18 (launcher 0.2.70 or later). Multiplayer on servers is the
+0.3.0: the native build has everything above, as a `.hmod` on Horizon's Nightly of 2026-11-18 (launcher 0.2.70 or later). Multiplayer on servers is the
 plan, the way movement mods do it: the server runs the mod too and lets its players swing.
 
 ## For mod authors

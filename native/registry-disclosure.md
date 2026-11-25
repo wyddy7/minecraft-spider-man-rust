@@ -1,4 +1,4 @@
-# Spider-Man: what the mod sends, reads and writes (0.2.8)
+# Spider-Man: what the mod sends, reads and writes (0.3.0)
 
 For the registry listing. Everything below happens only in the player's own world (single player, or a LAN world
 they host): the game's own server thread runs in the same game and the connection is to it. On anyone else's

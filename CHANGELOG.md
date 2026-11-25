@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0 — 2026-11-26
+
+- Swing animation: on a web the hand on the web's side holds it and the limbs play a take (web shot, downswing,
+  kick, upswing); nine takes, mirrored by the side the web is stuck on. The head is posed in flight. Changes of
+  pose cross-fade, the landing comes upright as one turn, and between ticks the body and each part blend as
+  rotations.
+- After a release each take goes on with its own flip, dive or tuck, most of them then with their own flight for
+  another two seconds: no cut to a single falling pose. A release thrown well upward on two of the takes hangs head down at the
+  top and arches forward. A level or falling release never turns the body upside down.
+- Free flight: with no take left to play the body lies along the flight path, diving when you fall forward and
+  level when you fly level; the spread-eagle is kept for a slow or straight-down fall.
+- A web shot out of the air throws the arm at the anchor.
+- Armour, the held item, the cape, elytra and worn layers (the cat backpack) stay on and follow the body in the
+  mod's poses: swinging, flips, wall runs.
+- `/swingmode anim on|off` switches the takes; `/swingmode take 0..8` plays one take on every web.
+- `/swingmode view … follow` carries the debug view along with the player; `/swingmode row TAKE ROW` holds one
+  row of a take, for looking at poses.
+
 ## 0.2.8 — 2026-11-24
 
 - Back catpack: its messages are sent and taken only while your game is connected to its own world, checked at
@@ -94,10 +112,10 @@
 - A native Horizon mod (`native/`): the same `src/` as a horizon-mixins bundle on an unmodified Horizon.
   Swing, zip, wall run, parkour, poses, web strands, chase camera, shake, `/swingmode`, and the fall reset on
   your own world's server, wind. Not yet: the HUD panel (the help shows in chat).
-- The ODM gear mode is gone; `/swingmode on|off` switches the mod, the other subcommands mirror its settings.
+- The old grapple mode is gone; `/swingmode on|off` switches the mod, the other subcommands mirror its settings.
 - A development loop with live reload: the game loads the mod as a library and picks up a rebuild within about a
   second (`native/tools/watch.sh`).
-- Parkour only while R is held, as R2 on PS4: on the ground R with W runs about twice the sprint, vaults and shoots no
+- Parkour only while R is held: on the ground R with W runs about twice the sprint, vaults and shoots no
   web; without R the ground plays as vanilla. R held from the ground fires the web after a jump or a fall off an edge.
   The ground jump-into-swing and its setting (`/swingmode jump`) are gone.
 - On a wall R held runs too (no double W press); a run up into an overhang or a terrace floor goes out from under
@@ -119,4 +137,4 @@ First release, single player and your own LAN world, on Horizon's proposed `moti
   landing.
 - Poses for the swing, flips, falls, vaults and the wall run; a chase camera with a speed rumble; wind.
 - Keys in Controls (R web, Z zip), rebindable; a settings page (web delay, jump into a swing), kept between games;
-  an ODM gear mode (`/swingmode odm`).
+  a second grapple mode (`/swingmode odm`).

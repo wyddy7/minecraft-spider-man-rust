@@ -125,7 +125,7 @@ impl Hooks for Mod {
         catpack::set_item_key(bag);
         r.item_part(bag, catpack_ui::BagPart);
         let delay = SettingSpec::range(WEB_DELAY, "Web delay", 0.0, 2.0, 0.25, DEFAULT_WEB_DELAY)
-            .tooltip("How long a web flies before it bites: 1 as in Spider-Man 2, 0 at once.");
+            .tooltip("How long a web flies before it bites: 1 the full flight, 0 at once.");
         let _ = r.register_setting(delay);
         let camera = SettingSpec::range(CAMERA, "Camera distance", 2.0, 12.0, 0.5, DEFAULT_CAMERA)
             .tooltip("How far behind the player the camera stays in web mode, in blocks; it backs off a little more in flight.");

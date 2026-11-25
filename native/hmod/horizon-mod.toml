@@ -1,6 +1,6 @@
 id = "spider_man"
 name = "Spider-Man"
-version = "0.2.8"
+version = "0.3.0"
 description = "Web swinging, zips, wall running and parkour."
 authors = ["wyddy7"]
 api = "0.2"
@@ -87,10 +87,21 @@ bindings = [
 [[native.mixin]]
 id = "posed-player"
 kind = "HEAD"
-cancellable = true
 target = "horizon_client::game::perspective::Game<'_>::player_model_geometry"
 helper = "src/game/model.rs"
 bindings = [
+  { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
+  { name = "alpha", ty = "f64", value = "alpha" },
+  { name = "out", ty = "&Vec<horizon_client::mesher::Vertex>", value = "&*out" },
+]
+
+[[native.mixin]]
+id = "turned-player"
+kind = "RETURN"
+target = "horizon_client::game::perspective::Game<'_>::player_model_geometry"
+helper = "src/game/turn.rs"
+bindings = [
+  { name = "value", ty = "()", value = "$value" },
   { name = "game", ty = "&crate::game::Game<'_>", value = "&*self" },
   { name = "camera", ty = "glam::DVec3", value = "camera" },
   { name = "alpha", ty = "f64", value = "alpha" },
