@@ -3956,7 +3956,7 @@ pub mod spiderman {
                 if let Some((si, t0, _)) = self.after {
                     // A launch lasts until the next web, the ground or a fast fall; any other release as long as its take.
                     let over = match self.launch {
-                        Some(_) => (self.ticks - t0) as usize >= anim::SWINGS[LAUNCH_TAKE].after_ticks + anim::AIR_TICKS,
+                        Some(_) => (self.ticks - t0) as usize >= anim::SWINGS[LAUNCH_TAKE].after_ticks + anim::CONT_TICKS[LAUNCH_TAKE],
                         None => (self.ticks - t0) as usize >= anim::SWINGS[si].after_ticks,
                     };
                     if !anim_on || self.web.is_some() || over {
@@ -4148,7 +4148,10 @@ pub mod spiderman {
                     mirror = self.anim_mirror;
                     let side = if mirror { -1.0 } else { 1.0 };
                     let turn = |r: &[f32; 12]| quat_mat([r[8], r[9], r[10] * side, r[11] * side]);
-                    let row = |k: usize| if k < n { take.after[k] } else { anim::AIR[(k - n).min(anim::AIR_TICKS - 1)] };
+                    // After the take's own tail, the take's own flight: one unbroken measured piece (the generic flight block
+                    // stitched on here made the arms jump at the join and thrust at its end).
+                    let cn = anim::CONT_TICKS[LAUNCH_TAKE];
+                    let row = |k: usize| if k < n { take.after[k] } else { anim::CONT[LAUNCH_TAKE][(k - n).min(cn - 1)] };
                     let trunk = &anim::TRUNK_AFTER[LAUNCH_TAKE];
                     let m = if t < n {
                         plane_turn(self.after_ahead, f64::from(trunk[t]))
@@ -4159,8 +4162,8 @@ pub mod spiderman {
                     let mut parts = Vec::with_capacity(5);
                     for (l, name) in ["right_arm", "left_arm", "right_leg", "left_leg"].into_iter().enumerate() {
                         let mut d = P::new(0.0, 0.0, 0.0);
-                        // Within one block only: the take's rows and the glide's are a second apart in the footage.
-                        let (lo, hi) = if t < n { (0, n - 1) } else { (n, n + anim::AIR_TICKS - 1) };
+                        // Within one block only.
+                        let (lo, hi) = if t < n { (0, n - 1) } else { (n, n + cn - 1) };
                         for k in t.saturating_sub(LAUNCH_SMOOTH).max(lo)..=(t + LAUNCH_SMOOTH).min(hi) {
                             let r = row(k);
                             d = d + limb_dir(r[2 * l], r[2 * l + 1], 1.0);
