@@ -586,6 +586,14 @@ impl Mod for Swing {
                 "Fixed view at {angle:.0}°, {distance:.1} blocks, looking at {height:.1}: /swingmode view off"
             )));
         }
+        // The cat's cartoon eyes: the native side keeps the setting; here only the reply.
+        if let Some(rest) = args.trim().strip_prefix("eyes") {
+            return match rest.trim() {
+                "on" => Ok(Some("Cartoon cat eyes: on (Options > Mods to change)".into())),
+                "off" => Ok(Some("Cartoon cat eyes: off".into())),
+                other => Err(format!("/swingmode eyes on|off, not {other}")),
+            };
+        }
         if let Some(rest) = args.trim().strip_prefix("camera") {
             // `quiet`: from the mod's row in Options > Mods, which shows the value itself.
             let (rest, quiet) = match rest.trim().strip_suffix("quiet") {
@@ -693,11 +701,11 @@ impl Mod for Swing {
             "off" => Mode::Off,
             "" => {
                 return Ok(Some(
-                    "/swingmode on|off · delay 0..2 · speed 0..200 · speedo · camera 2..12 · view side|front|back|<degrees> [distance] [height]|off · debug"
+                    "/swingmode on|off · delay 0..2 · speed 0..200 · speedo · camera 2..12 · eyes on|off · view side|front|back|<degrees> [distance] [height]|off · debug"
                         .into(),
                 ));
             }
-            other => return Err(format!("/swingmode on|off|delay|speed|speedo|camera|view|debug, not {other}")),
+            other => return Err(format!("/swingmode on|off|delay|speed|speedo|camera|eyes|view|debug, not {other}")),
         };
         self.last_chest = None;
         self.spidey.reset();

@@ -38,15 +38,13 @@ const EYE_TOP: f32 = -2.0;
 const EYE_W: f32 = 2.0;
 const EYE_H: f32 = 2.0;
 const EYE_FRONT: f32 = -2.52;
-/// The pupil at rest: a big dark rectangle, as the reference's (1.85 × 1.9 of its 8-wide head).
+/// The pupil at rest: a dark square about half the eye, so the coat's iris colour shows round it.
 /// Dilating, it grows; scared, it narrows to an upright slit.
-const PUPIL: [f32; 2] = [1.2, 1.1];
+const PUPIL: [f32; 2] = [0.95, 0.95];
 const DILATE: [f32; 2] = [0.35, 0.3];
 const SLIT: [f32; 2] = [-0.68, 0.15];
 /// Each eye's part, by name.
 const EYES_PARTS: [&str; 2] = ["eye0", "eye1"];
-/// The coats the eyes are tried on: the siamese and the black-and-white.
-const EYED: [&str; 2] = ["siamese", "black"];
 
 /// The cat variants: the texture `entity/cat/cat_<name>`.
 pub const VARIANTS: [&str; 11] = [
@@ -200,18 +198,18 @@ fn eyes() -> ModelPart {
         let [step, band] = [0.35, 0.3];
         // The outer side: eye 0's is -x (the head's edge), eye 1's +x.
         let (sx0, sx1) = if side == 0 { (x0 + step, x1) } else { (x0, x1 - step) };
-        let iris = colour(Colour::Iris);
+        let iris = colour(0, Slot::Iris);
         let polygons = vec![
-            quad(x0, y0, x1, y1, EYE_FRONT + 0.01, colour(Colour::Face(0)), 0.0),
+            quad(x0, y0, x1, y1, EYE_FRONT + 0.01, colour(0, Slot::Face), 0.0),
             quad(sx0, y0, sx1, y0 + step, EYE_FRONT, iris, 0.0),
             quad(x0, y0 + step, x1, y1 - band, EYE_FRONT, iris, 0.0),
-            quad(x0, y1 - band, x1, y1, EYE_FRONT, colour(Colour::Band), 0.0),
+            quad(x0, y1 - band, x1, y1, EYE_FRONT, colour(0, Slot::Band), 0.0),
         ];
         let [w, h] = PUPIL.map(|s| s * 0.5);
         let z = EYE_FRONT - 0.01;
         let split = h * 0.2;
-        let pupil = vec![quad(-w, -h, w, split, z, colour(Colour::Pupil), 0.0), quad(-w, split, w, h, z, colour(Colour::PupilLow), 0.0)];
-        let lid = || ModelPart::new(vec![quad(x0, y0, x1, y0, EYE_FRONT - 0.02, colour(Colour::Face(0)), 0.0)], Vec::new(), PartPose::ZERO);
+        let pupil = vec![quad(-w, -h, w, split, z, colour(0, Slot::Pupil), 0.0), quad(-w, split, w, h, z, colour(0, Slot::PupilLow), 0.0)];
+        let lid = || ModelPart::new(vec![quad(x0, y0, x1, y0, EYE_FRONT - 0.02, colour(0, Slot::Face), 0.0)], Vec::new(), PartPose::ZERO);
         let children = vec![
             ("pupil".to_owned(), ModelPart::new(pupil, Vec::new(), PartPose::ZERO)),
             ("top".to_owned(), lid()),
@@ -223,28 +221,37 @@ fn eyes() -> ModelPart {
     ModelPart::new(Vec::new(), vec![("head".to_owned(), head)], PartPose::rotation(0.0, std::f32::consts::PI, 0.0))
 }
 
-/// The eyes' colours, in the palette's order (`native/tools/cat_eyes_texture.py`).
+/// A colour of an eye, a column of the palette (`native/tools/cat_eyes_texture.py`), whose rows
+/// are the coats in `VARIANTS`' order.
 #[derive(Clone, Copy)]
-enum Colour {
+enum Slot {
     Iris,
     Band,
     Pupil,
     PupilLow,
-    /// A coat's face: 0 the siamese, 1 the black-and-white (`EYED`'s order).
-    Face(usize),
+    Face,
+    /// The second eye's iris and band: the white cat's odd eyes (the others repeat the first's).
+    Iris2,
+    Band2,
 }
 
-/// Texture coordinates putting a whole face on one palette texel.
-fn colour(c: Colour) -> [f32; 4] {
-    let texel = match c {
-        Colour::Iris => 0,
-        Colour::Band => 1,
-        Colour::Pupil => 2,
-        Colour::PupilLow => 3,
-        Colour::Face(coat) => 4 + coat,
-    };
-    let u = (texel as f32 + 0.5) / 8.0;
-    [u, 0.5, u, 0.5]
+/// Texture coordinates putting a whole face on the palette's texel for `coat`'s `slot`.
+fn colour(coat: usize, slot: Slot) -> [f32; 4] {
+    let (u, v) = ((slot as usize as f32 + 0.5) / 8.0, (coat as f32 + 0.5) / VARIANTS.len() as f32);
+    [u, v, u, v]
+}
+
+/// Puts every corner of `quad` on one palette texel.
+fn paint(quad: &mut ModelPolygon, uv: [f32; 4]) {
+    quad.vertices.iter_mut().for_each(|v| (v.u, v.v) = (uv[0], uv[1]));
+}
+
+/// Whether the cartoon eyes are on (the mod's setting, `/swingmode eyes`). Off by default: the
+/// cats keep the game's own face.
+static EYES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_eyes(on: bool) {
+    EYES_ON.store(on, Ordering::Relaxed);
 }
 
 /// One box's faces, baked on a `texture` of that many texels at the box-UV place (`u`, `v`).
@@ -976,8 +983,8 @@ fn eyes_of(
         _ if grumpy || swat > 0.3 => ((0.0, 0.0, 0.65, 0.0, 0.0, 0.0), Some([0.8, 0.85])),
         _ if rise < -0.55 => ((0.0, 0.0, 0.0, 0.0, 0.0, 1.0), Some([0.0, -0.6])),
         _ if rush > 0.5 => ((0.38, 0.38, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.0])),
-        _ if kneading > 0.0 => ((0.0, 0.3, 0.0, 0.0, 0.3, 0.0), None),
-        _ if held => ((0.0, 0.0, 0.0, 0.0, 1.0, 0.0), None),
+        _ if kneading > 0.0 => ((0.0, 0.3, 0.0, 0.0, 0.15, 0.0), None),
+        _ if held => ((0.0, 0.0, 0.0, 0.0, 0.3, 0.0), None),
         _ if drowsy => ((0.45, 0.0, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.5])),
         _ => ((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), None),
     };
@@ -1075,7 +1082,7 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
 }
 
 /// Poses the eyes' model as the cat's head stands this frame: the pupils where `e` has them, the
-/// lids' corners where `e` has the lids, all in `coat`'s face colour.
+/// lids' corners where `e` has the lids, all in `coat`'s colours.
 fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame, coat: usize) {
     eyes.visible = cat.visible;
     eyes.load_pose(cat.store_pose());
@@ -1086,11 +1093,18 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame, coat: usize) {
     let size = [PUPIL[0] * grow[0], PUPIL[1] * grow[1]];
     // How far the pupil's middle may go from the eye's, so the pupil stays inside it.
     let reach = [(EYE_W - size[0]) * 0.5, (EYE_H - size[1]) * 0.5];
-    let face = colour(Colour::Face(coat));
+    let face = colour(coat, Slot::Face);
     for (side, x0) in EYE_X.iter().enumerate() {
         let Some(eye) = head.get_child_mut(EYES_PARTS[side]) else { continue };
-        eye.polygons[0].vertices.iter_mut().for_each(|v| (v.u, v.v) = (face[0], face[1]));
+        // The coat's colours: the face patch, the iris (two faces) and its band.
+        let (iris, band) = if side == 0 { (Slot::Iris, Slot::Band) } else { (Slot::Iris2, Slot::Band2) };
+        for (polygon, slot) in eye.polygons.iter_mut().zip([Slot::Face, iris, iris, band]) {
+            paint(polygon, colour(coat, slot));
+        }
         if let Some(pupil) = eye.get_child_mut("pupil") {
+            for (polygon, slot) in pupil.polygons.iter_mut().zip([Slot::Pupil, Slot::PupilLow]) {
+                paint(polygon, colour(coat, slot));
+            }
             // Eye 0's nose side is +x, eye 1's -x.
             let x = (e.pupil[0] + if side == 0 { e.cross } else { -e.cross }).clamp(-1.0, 1.0);
             pupil.set_pos(x0 + EYE_W * 0.5 + x * reach[0], EYE_TOP + EYE_H * 0.5 + e.pupil[1] * reach[1], 0.0);
@@ -1282,8 +1296,8 @@ fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, fra
     if let Some(cat) = lock(worn.kind.model()).as_mut() {
         pose(cat, tune, frame);
         draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
-        // The cartoon eyes are a trial on two coats only; the others keep the game's own face.
-        let coat = EYED.iter().position(|v| *v == worn.variant);
+        // The cartoon eyes, when on: every grown cat, in its coat's colours.
+        let coat = VARIANTS.iter().position(|v| *v == worn.variant).filter(|_| EYES_ON.load(Ordering::Relaxed));
         if worn.kind == Kind::Cat
             && let Some(coat) = coat
             && let Some(eyes) = lock(&EYES).as_mut()

@@ -28,6 +28,8 @@ const CAMERA: &str = "camera_distance";
 /// The long-flight speed bonus row: how far past the usual top speed a long flight may go, in percent.
 const SPEED: &str = "long_flight_speed";
 const DEFAULT_SPEED: f64 = 30.0;
+/// The cat backpack's cartoon eyes row: off (the game's own face, the default) or on.
+const EYES: &str = "cat_eyes";
 /// The row that puts the others back to their defaults, then turns itself off.
 const RESET: &str = "reset";
 /// The defaults: half the reference web flight (the mod's own default since 0.1), the camera 6 blocks back.
@@ -133,6 +135,9 @@ impl Hooks for Mod {
         let speed = SettingSpec::range(SPEED, "Long-flight speed bonus %", 0.0, 200.0, 10.0, DEFAULT_SPEED)
             .tooltip("After 3 s in the air the top speed rises over 5 s by this much; landing resets it. 0 = the usual top speed.");
         let _ = r.register_setting(speed);
+        let eyes = SettingSpec::choice(EYES, "Cartoon cat eyes", ["off", "on"], 0)
+            .tooltip("The cat in the backpack gets big cartoon eyes in its coat's colours, which blink, glance and show how it feels.");
+        let _ = r.register_setting(eyes);
         // The page has no button row, so the reset is a row with one thing to click: it reads
         // "click here", does its work on the click and reads "done" until the page is opened again.
         let reset = SettingSpec::choice(RESET, "Reset all to defaults", ["click here", "done"], 0)
@@ -175,6 +180,7 @@ impl Hooks for Mod {
         if now.is_none() {
             return;
         }
+        catpack::set_eyes(host.setting_choice(EYES) == Some(1));
         catpack::tick(host);
         catpack_ui::tick(host);
     }
@@ -221,12 +227,19 @@ impl Hooks for Mod {
 
     /// `/swingmode …` goes to the mod, not the server, in the player's own world only; elsewhere
     /// the server gets it as always.
-    fn command(&self, _host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
+    fn command(&self, host: &mut dyn ClientHost, event: &mut mod_api::CommandEvent<'_>) -> Flow {
         if !is_command(event.command) || !OWN_WORLD.load(Ordering::Relaxed) {
             return Flow::Continue;
         }
         let command = event.command.trim();
         let (name, args) = command.split_once(' ').unwrap_or((command, ""));
+        // `/swingmode eyes on|off` sets the row (the setting keeps it); the mod's reply comes from
+        // the game-side tick as for every other `/swingmode`.
+        match args.trim() {
+            "eyes on" => host.set_setting(MOD_ID, EYES, "1"),
+            "eyes off" => host.set_setting(MOD_ID, EYES, "0"),
+            _ => {}
+        }
         ran().push((name.to_owned(), args.trim().to_owned()));
         Flow::Cancel
     }
@@ -337,6 +350,7 @@ impl Hooks for Mod {
                 host.set_setting(MOD_ID, WEB_DELAY, &DEFAULT_WEB_DELAY.to_string());
                 host.set_setting(MOD_ID, CAMERA, &DEFAULT_CAMERA.to_string());
                 host.set_setting(MOD_ID, SPEED, &DEFAULT_SPEED.to_string());
+                host.set_setting(MOD_ID, EYES, "0");
                 host.set_setting(MOD_ID, RESET, "0");
                 let mut ran = ran();
                 ran.retain(|(name, args)| !(name == "swingmode" && args.ends_with(" quiet")));
