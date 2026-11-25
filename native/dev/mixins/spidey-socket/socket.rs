@@ -8,7 +8,7 @@
 // the mod that are not finite are dropped, and a panic in it stops the mod for
 // that tick, not the game.
 
-use horizon_dev_reload::abi::{Camera, Input, Player, Pose, Ray, State, Vec3};
+use horizon_dev_reload::abi::{Camera, Input, PartPose, Player, Pose, Ray, State, Vec3};
 use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -41,6 +41,9 @@ const TURNED_PITCH: f32 = 80.0;
 struct Shared {
     /// Last tick's pose and this tick's, blended per frame.
     poses: [Option<Pose>; 2],
+    /// This frame's pose (the two ticks blended), the turn of a head it leaves to the game, the
+    /// body's whole turn and shift, and where the player's vertices begin in the frame's list.
+    frame: Option<(Pose, f32, glam::Quat, glam::Vec3, usize)>,
     camera: Option<Camera>,
     /// The plug forgot the fall this tick; the on-ground value to restore
     /// after the state packet.
@@ -78,6 +81,7 @@ const THWIP_PITCH: f32 = 1.6;
 
 static SHARED: Mutex<Shared> = Mutex::new(Shared {
     poses: [None, None],
+    frame: None,
     camera: None,
     safe_fall: false,
     server_safe: false,
@@ -153,6 +157,7 @@ fn sane_pose(p: Pose) -> Option<Pose> {
 /// Forgets everything the mod asked for (no mod output, or not our world).
 fn clear(s: &mut Shared) {
     s.poses = [None, None];
+    s.frame = None;
     s.camera = None;
     s.safe_fall = false;
     s.server_safe = false;
@@ -262,6 +267,7 @@ pub fn tick(game: &mut super::Game<'_>) {
             s.shown_delay = None;
         });
         wind(game, 0.0);
+        lay_pose(game, false);
         return;
     }
     let local = local(game);
@@ -375,6 +381,8 @@ pub fn tick(game: &mut super::Game<'_>) {
             s.jolts.push((Instant::now(), strength.clamp(0.0, 2.0), seconds.clamp(0.0, 5.0)));
         }
     });
+    let posed = shared(|s| s.poses[1].is_some());
+    lay_pose(game, posed);
     // Wind lasts while the plug keeps asking for it, tick by tick.
     let wind_now = match out.wind {
         horizon_dev_reload::abi::Set::To(v) if local => v,
@@ -636,7 +644,30 @@ pub fn rope_geometry(
     }
 }
 
-/// The plug's pose this frame: the last two ticks' blended by `alpha`.
+/// The body's whole turn of a pose (the facing, then pitch, roll and twist), and its shift.
+fn body_turn(pose: &Pose, yaw: f32) -> (glam::Quat, glam::Vec3) {
+    let turn = glam::Quat::from_rotation_y((180.0 - pose.facing.unwrap_or(yaw)).to_radians())
+        * glam::Quat::from_rotation_x(pose.pitch)
+        * glam::Quat::from_rotation_z(pose.roll)
+        * glam::Quat::from_rotation_y(pose.twist);
+    let shift = pose.shift.as_ref().map_or(glam::Vec3::ZERO, |s| {
+        glam::Vec3::new(s.x as f32, s.y as f32, s.z as f32).clamp(glam::Vec3::splat(-2.0), glam::Vec3::splat(2.0))
+    });
+    (turn, shift)
+}
+
+/// The body's turn and shift this frame: the last two ticks' blended by `alpha` as one rotation. Blended angle
+/// by angle (and the facing not at all) the body moved in steps, twenty a second, and wobbled through a tumble.
+fn frame_body(alpha: f32, yaw: f32) -> Option<(glam::Quat, glam::Vec3)> {
+    let [prev, cur] = shared(|s| s.poses.clone());
+    let (turn, shift) = body_turn(cur.as_ref()?, yaw);
+    let Some((from, shift_from)) = prev.as_ref().map(|p| body_turn(p, yaw)) else {
+        return Some((turn, shift));
+    };
+    Some((from.slerp(turn, alpha), shift_from.lerp(shift, alpha)))
+}
+
+/// The plug's pose this frame: the parts of the last two ticks blended by `alpha`.
 fn frame_pose(alpha: f32) -> Option<Pose> {
     let [prev, cur] = shared(|s| s.poses.clone());
     let mut pose = cur?;
@@ -651,14 +682,13 @@ fn frame_pose(alpha: f32) -> Option<Pose> {
             a + (b - a) * alpha
         }
     };
-    pose.pitch = lerp(prev.pitch, pose.pitch);
-    pose.roll = lerp(prev.roll, pose.roll);
-    pose.twist = lerp(prev.twist, pose.twist);
     for part in &mut pose.parts {
         if let Some(p) = prev.parts.iter().find(|p| p.part == part.part) {
-            part.pitch = lerp(p.pitch, part.pitch);
-            part.yaw = lerp(p.yaw, part.yaw);
-            part.roll = lerp(p.roll, part.roll);
+            // As one rotation, in the order the game turns a part (z, then y, then x): blended angle by
+            // angle, a limb passing near straight ahead swung wide between two ticks.
+            let turn = |p: &PartPose| glam::Quat::from_euler(glam::EulerRot::ZYX, p.roll, p.yaw, p.pitch);
+            let (z, y, x) = turn(p).slerp(turn(part), alpha).to_euler(glam::EulerRot::ZYX);
+            (part.pitch, part.yaw, part.roll) = (x, y, z);
             if let (Some(a), Some(b)) = (p.pivot_y, part.pivot_y) {
                 part.pivot_y = Some(lerp(a, b));
             }
@@ -670,20 +700,73 @@ fn frame_pose(alpha: f32) -> Option<Pose> {
     Some(pose)
 }
 
-/// The player's own model in third person, posed by the plug: drawn here
-/// (body and the parts the pose names over the vanilla animation) instead of
-/// the game's draw. Without a pose, or while sleeping, swimming, gliding or
-/// dying, the game draws it as always. While posed, armour, the held item
-/// and elytra are not drawn (their draws are the game's private helpers).
-pub fn player_model(
-    game: &super::Game<'_>,
-    camera: glam::DVec3,
-    alpha: f64,
-    out: &mut Vec<horizon_client::mesher::Vertex>,
-) -> ControlFlow<()> {
-    use horizon_client::mobs::{anim, render};
-    // Where the game itself would not draw the model (first person, spectator,
-    // invisible), or not our world: the game decides as always.
+/// The plug's pose, laid over the player's own model the way Horizon's emotes are (`Mob::emote`): the game
+/// poses and draws the body itself, so armour, the held item, the cape, elytra and the mods' layers follow
+/// the pose. The parts are the frame's (`pose_frame`); without one it poses nothing.
+#[derive(Debug)]
+struct Posed;
+
+impl horizon_client::mobs::anim::BodyPose for Posed {
+    fn pose(&self, _age: f32, _at_rest: &[[f32; 9]; 6], poses: &mut [[f32; 9]; 6]) -> bool {
+        let Some((pose, head)) = shared(|s| s.frame.as_ref().map(|f| (f.0.clone(), f.1))) else {
+            return false;
+        };
+        let mut head_named = false;
+        for part in &pose.parts {
+            let Some(i) = horizon_client::mobs::anim::BODY_PARTS.iter().position(|b| *b == part.part) else {
+                continue;
+            };
+            head_named |= i == 0;
+            let p = &mut poses[i];
+            p[3] = part.pitch;
+            p[4] = part.yaw;
+            p[5] = part.roll;
+            if let Some(y) = part.pivot_y {
+                p[1] = y;
+            }
+            if let Some(z) = part.pivot_z {
+                p[2] = z;
+            }
+        }
+        // A head the pose leaves to the game turns from the posed body's front, not from the
+        // game's own body turn (which the pose replaces).
+        if !head_named {
+            poses[0][4] = head;
+        }
+        true
+    }
+}
+
+/// Lays the plug's pose over the player's model while there is one, and takes it off after. A pose
+/// the game laid itself (an emote) is left alone.
+fn lay_pose(game: &mut super::Game<'_>, posed: bool) {
+    let Some(m) = game.player_model.as_mut() else {
+        return;
+    };
+    if posed && m.emote.is_none() {
+        m.emote = Some(std::sync::Arc::new(Posed));
+    } else if !posed && ours(m) {
+        m.emote = None;
+    }
+}
+
+fn ours(m: &horizon_client::mobs::Mob) -> bool {
+    m.emote.as_ref().is_some_and(|p| {
+        let any: &dyn std::any::Any = &**p;
+        any.is::<Posed>()
+    })
+}
+
+/// No pose this frame: the game draws the player as always.
+fn no_frame() {
+    shared(|s| s.frame = None);
+}
+
+/// Before the game draws the player's own model in third person: the plug's pose for this frame
+/// (the parts for `Posed`, the body's whole turn and shift for `turn_posed`). Without a pose, or
+/// while sleeping, swimming, gliding or dying, in first person, as a spectator, invisible or
+/// outside the own world, there is none and the game draws the player as always.
+pub fn pose_frame(game: &super::Game<'_>, alpha: f64, start: usize) {
     // (The player's effects are kept under bare ids; both spellings checked.)
     if game.camera_type.is_first_person()
         || game.spectator()
@@ -694,84 +777,63 @@ pub fn player_model(
         || !on(game)
         || !local(game)
     {
-        return ControlFlow::Continue(());
-    }
-    let (Some(pose), Some(m)) = (frame_pose(alpha as f32), game.player_model.as_ref()) else {
-        return ControlFlow::Continue(());
-    };
-    if m.extra.fall_flying || m.death_time > 0 || game.sleeping.is_some() || m.extra.swim.amount(alpha as f32) > 0.0 {
-        return ControlFlow::Continue(());
+        return no_frame();
     }
     let a = alpha as f32;
-    // A posed body faces where the plug says (a wall it runs on), else
-    // where the player looks.
+    let (Some(pose), Some(m)) = (frame_pose(a), game.player_model.as_ref()) else {
+        return no_frame();
+    };
+    if !ours(m)
+        || m.extra.fall_flying
+        || m.death_time > 0
+        || game.sleeping.is_some()
+        || m.extra.swim.amount(a) > 0.0
+    {
+        return no_frame();
+    }
+    let Some((body, shift)) = frame_body(a, game.yaw) else {
+        return no_frame();
+    };
+    // A posed body faces where the plug says (a wall it runs on), else where the player looks.
     let facing = pose.facing.unwrap_or(game.yaw);
-    let mut m = m.clone();
-    m.body_yaw = facing;
-    m.previous_body_yaw = facing;
+    let turned = ((m.head_yaw - m.previous_head_yaw + 180.0).rem_euclid(360.0) - 180.0) * a;
+    let head = ((m.previous_head_yaw + turned - facing + 180.0).rem_euclid(360.0) - 180.0).to_radians();
+    shared(|s| s.frame = Some((pose, head, body, shift, start)));
+}
+
+/// After the game drew the player's own model, and all it wears and holds, standing as the game
+/// stands it: the whole of it is turned and shifted as the pose says, about the body's middle
+/// (the game's own turn by the body's yaw undone first). The game builds a model's root transform
+/// in its library, out of a mod's reach, so the turn is given to the finished vertices instead.
+pub fn turn_posed(
+    game: &super::Game<'_>,
+    camera: glam::DVec3,
+    alpha: f64,
+    out: &mut Vec<horizon_client::mesher::Vertex>,
+) {
+    let Some((body, shift, start)) = shared(|s| s.frame.as_ref().map(|f| (f.2, f.3, f.4))) else {
+        return;
+    };
+    let (Some(m), Some(drawn)) = (game.player_model.as_ref(), out.get_mut(start..)) else {
+        return;
+    };
     let at = glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * alpha,
         m.previous.y + (m.position.y - m.previous.y) * alpha,
         m.previous.z + (m.position.z - m.previous.z) * alpha,
     ) - camera;
-    // The game turns the body by its yaw, then flips and scales the model:
-    // the shift goes before that turn, pitch, roll and twist (about the
-    // body's middle) right after it, so they are undone and redone around it.
-    let turn = glam::Mat4::from_rotation_y((180.0 - facing).to_radians());
-    let middle = glam::Vec3::new(0.0, 0.9, 0.0);
-    let shift = pose.shift.as_ref().map_or(glam::Vec3::ZERO, |s| {
-        glam::Vec3::new(s.x as f32, s.y as f32, s.z as f32).clamp(glam::Vec3::splat(-2.0), glam::Vec3::splat(2.0))
-    });
-    let origin = glam::Mat4::from_translation(at.as_vec3() + shift)
-        * turn
-        * glam::Mat4::from_translation(middle)
-        * glam::Mat4::from_rotation_x(pose.pitch)
-        * glam::Mat4::from_rotation_z(pose.roll)
-        * glam::Mat4::from_rotation_y(pose.twist)
-        * glam::Mat4::from_translation(-middle)
-        * turn.inverse();
-    let base = render::base_transform_at(&m, a, origin);
-    let light = game.world.light(
-        m.position.x.floor() as i32,
-        (m.position.y + 1.62).floor() as i32,
-        m.position.z.floor() as i32,
-    );
-    let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-    let (model_key, texture) = render::body(&m);
-    let model = m
-        .kind
-        .layer(&model_key)
-        .cloned()
-        .unwrap_or_else(|| m.kind.model.clone());
-    let Some(uv) = game
-        .gui
-        .atlas
-        .sprites
-        .get(&texture[..])
-        .map(|r| [r.u0, r.v0, r.u1, r.v1])
-    else {
-        return ControlFlow::Continue(());
-    };
-    let mut poses = anim::Poses::new(&model);
-    let state = anim::state(&m, a);
-    anim::setup(&m, &state, &mut poses, &game.res.mob_data().animations);
-    for part in &pose.parts {
-        if !poses.has(&part.part) {
-            continue;
-        }
-        let p = poses.get(&part.part);
-        p[3] = part.pitch;
-        p[4] = part.yaw;
-        p[5] = part.roll;
-        if let Some(y) = part.pivot_y {
-            p[1] = y;
-        }
-        if let Some(z) = part.pivot_z {
-            p[2] = z;
+    let middle = at.as_vec3() + glam::Vec3::new(0.0, 0.9, 0.0);
+    let yaw = glam::Quat::from_rotation_y((180.0 - horizon_client::mobs::anim::body_rot(m, alpha as f32)).to_radians());
+    let turn = body * yaw.inverse();
+    for v in drawn {
+        v.pos = (middle + shift + turn * (glam::Vec3::from_array(v.pos) - middle)).to_array();
+        // The face normal the light is taken from turns too; its flag (w) stays.
+        let [x, y, z, w] = v.normal;
+        if (x, y, z) != (0, 0, 0) {
+            let n = turn * glam::Vec3::new(f32::from(x), f32::from(y), f32::from(z));
+            v.normal = [n.x.round() as i8, n.y.round() as i8, n.z.round() as i8, w];
         }
     }
-    render::draw(&model, base, &poses, uv, render::body_color(&m, a), packed, 0, out);
-    ControlFlow::Break(())
 }
 
 /// The wall camera's turn of the whole view (identity off the wall); the
@@ -934,6 +996,17 @@ pub fn camera_view(
             drop_align();
             // Near the player: a view of the body, not a free camera.
             let body = glam::DVec3::new(p.position.x, p.position.y, p.position.z);
+            if f.follow {
+                // Carried along with the player, between ticks too: `at` and `look_at` are from the feet.
+                let a = f64::from(partial);
+                let feet = glam::DVec3::new(
+                    game.previous_position.x + (p.position.x - game.previous_position.x) * a,
+                    game.previous_position.y + (p.position.y - game.previous_position.y) * a,
+                    game.previous_position.z + (p.position.z - game.previous_position.z) * a,
+                );
+                let near = |v: &Vec3| feet + dvec(v).clamp_length_max(FIXED_CAMERA_REACH);
+                return ControlFlow::Break(Some(look_from(near(&f.at), near(&f.look_at))));
+            }
             let near = |v: &Vec3| body + (dvec(v) - body).clamp_length_max(FIXED_CAMERA_REACH);
             ControlFlow::Break(Some(look_from(near(&f.at), near(&f.look_at))))
         }

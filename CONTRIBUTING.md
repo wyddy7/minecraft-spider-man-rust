@@ -6,7 +6,7 @@ Changes come in as pull requests only; nobody pushes to `main`, maintainers incl
 
 - **One change per pull request**, with what and why. For anything that moves or looks different, a short clip or
   screenshots in third person (F5): movement is judged by eye.
-- **Name the reference** a feel change follows: a moment of Spider-Man 2 gameplay (video and time), another game,
+- **Name the reference** a feel change follows: a moment of gameplay footage (video and time), another game,
   or a playtest note. Numbers that were tuned say so in a comment.
 - **Builds clean**: `cargo-horizon-mod horizon-mod build` with no warnings.
 - **Played**: in a test world, not your own survival world. Check the things your change can break: a swing, a zip,

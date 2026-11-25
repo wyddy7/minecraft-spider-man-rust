@@ -91,6 +91,9 @@ pub struct ChaseCamera {
 pub struct FixedCamera {
     pub at: Vec3,
     pub look_at: Vec3,
+    /// `at` and `look_at` are from the player's feet, and the camera goes along with the player.
+    #[serde(default)]
+    pub follow: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

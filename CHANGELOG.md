@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Armour, the held item, the cape, elytra and worn layers (the cat backpack) stay on and follow the body in the
+  mod's poses: swinging, flips, wall runs.
 - Back catpack: a backpack that carries your cat. Craft it (leather, string, a chest) or take it from the
   mod's creative tab. Use it on your own tamed cat and the cat rides in it, a kitten grows there, and sneak-use
   on top of a block sets the same cat down there, as a bucket empties, with its name, collar and owner.
@@ -23,6 +25,13 @@
 - `/swingmode speedo` shows a speedometer in the corner: the speed now, the top of this flight, the best since
   the game started, the current top speed and the time in the air.
 - The web delay row's default is 0.5 again, the mod's own default (0.2.5's row said 1).
+- Swing animation: on a web the body hangs along the rope with its back to the chase camera, the hand on the
+  web's side holds it and the other limbs play a take (web shot, downswing, kick, upswing, then what follows the
+  release); nine takes, mirrored by the side the web is stuck on. The head is posed in flight. Changes of pose
+  cross-fade, the landing comes upright as one turn, and between ticks the body and each part blend as rotations.
+  `/swingmode anim on|off` switches the takes; `/swingmode take 0..8` plays one take on every web.
+- `/swingmode view … follow` carries the debug view along with the player. `SPIDEY_TRACE=<file>` in the game's
+  environment writes the pose of every tick, for checking motion in numbers.
 - `/swingmode view` takes an angle from behind, a distance and a height: `/swingmode view 45 2.5 1.4` looks at
   the player from behind and to the right, close up, for checking poses and what the player wears.
 
@@ -76,7 +85,7 @@
 - The ODM gear mode is gone; `/swingmode on|off` switches the mod, the other subcommands mirror its settings.
 - A development loop with live reload: the game loads the mod as a library and picks up a rebuild within about a
   second (`native/tools/watch.sh`).
-- Parkour only while R is held, as R2 on PS4: on the ground R with W runs about twice the sprint, vaults and shoots no
+- Parkour only while R is held: on the ground R with W runs about twice the sprint, vaults and shoots no
   web; without R the ground plays as vanilla. R held from the ground fires the web after a jump or a fall off an edge.
   The ground jump-into-swing and its setting (`/swingmode jump`) are gone.
 - On a wall R held runs too (no double W press); a run up into an overhang or a terrace floor goes out from under
