@@ -1190,6 +1190,19 @@ fn plane_turn(ahead: P, th: f64) -> M {
     [[right.x, head.x, back.x], [right.y, head.y, back.y], [right.z, head.z, back.z]]
 }
 
+/// The same limb direction as `target`, written as the pair of angles nearest to the ones the limb shows now.
+/// A direction has two such pairs; rows from different tables may use different ones, and easing from one to the
+/// other angle by angle swung the limb through a wide arc at every join (the arm that jerked in flight).
+fn nearest_angles(name: &str, target: [f32; 3], last: [f32; 3]) -> [f32; 3] {
+    if name == "head" || target[1] != 0.0 {
+        return target;
+    }
+    let side: f32 = if name.starts_with("left") { -1.0 } else { 1.0 };
+    let d = limb_dir(target[0], target[2], side);
+    let (x, z) = limb_angles(P::new(d.x * f64::from(side), d.y, d.z), [last[0], last[1], last[2] * side]);
+    [x, 0.0, z * side]
+}
+
 fn limb_parts(r: &[f32]) -> Vec<(&'static str, [f32; 3])> {
     vec![
         ("right_arm", [r[0], 0.0, r[1]]),
@@ -2429,6 +2442,7 @@ impl Spidey {
                 .find(|(n, _)| n == name)
                 .map_or([0.0; 3], |(_, a)| *a);
             let k = if name == "head" { k.min(HEAD_EASE) } else { k };
+            let target = if source != 0 { nearest_angles(name, target, last) } else { target };
             let a = [0, 1, 2].map(|i| angle_step(last[i], target[i], k));
             let a = if turning && held_back { [0, 1, 2].map(|i| last[i] + (a[i] - last[i]).clamp(-MAX_PART_STEP, MAX_PART_STEP)) } else { a };
             out.push((name.to_string(), a));
