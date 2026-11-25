@@ -50,6 +50,8 @@ const LID_UV: [f32; 2] = [7.0, 5.0];
 /// Each eye's lids (top, bottom, angry brow, worried brow) and pupil, by name.
 const LIDS: [[&str; 4]; 2] = [["lid0_top", "lid0_bottom", "lid0_angry", "lid0_worried"], ["lid1_top", "lid1_bottom", "lid1_angry", "lid1_worried"]];
 const PUPILS: [&str; 2] = ["pupil0", "pupil1"];
+/// The coats the eyes are tried on: the siamese and the black-and-white.
+const EYED: [&str; 2] = ["siamese", "black"];
 
 /// The cat variants: the texture `entity/cat/cat_<name>`.
 pub const VARIANTS: [&str; 11] = [
@@ -1265,8 +1267,17 @@ fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, fra
     }
     if let Some(cat) = lock(worn.kind.model()).as_mut() {
         pose(cat, tune, frame);
+        // The cartoon eyes are a trial on two coats only; the others keep the game's own face.
+        let eyed = worn.kind == Kind::Cat && EYED.contains(&worn.variant.as_str());
+        if !eyed && let Some(head) = cat.get_child_mut("head") {
+            for name in LIDS.into_iter().flatten() {
+                if let Some(lid) = head.get_child_mut(name) {
+                    lid.visible = false;
+                }
+            }
+        }
         draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
-        if worn.kind == Kind::Cat
+        if eyed
             && let Some(eyes) = lock(&EYES).as_mut()
         {
             pose_eyes(eyes, cat, &frame.eyes);
