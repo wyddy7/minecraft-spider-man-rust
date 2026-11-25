@@ -156,6 +156,7 @@ const SHOT_REACH: f32 = 0.6;
 /// flying level) instead of the one spread-eagle. Level speed below `GLIDE_SPEED` (blocks a tick) keeps the
 /// spread-eagle: a slow or near-vertical fall has no path to lie along.
 const GLIDE_SPEED: f64 = 0.25;
+const GLIDE_HOLD: u32 = 14;
 /// The trunk follows the path's pitch within these bounds (head down, head up; radians): the measured dive holds
 /// at 45 to 55 degrees, never vertical.
 const GLIDE_PITCH: (f64, f64) = (0.96, 0.26);
@@ -402,6 +403,11 @@ pub struct Spidey {
     /// What a take goes on with once its after-block has played out (`swing_anim::CONT`): the take, the tick it
     /// started, the body's turn it started from.
     cont: Option<(usize, u32, M)>,
+    /// Free flight: ticks in a row with too little level speed to glide, and the last heading it had. The
+    /// spread-eagle waits `GLIDE_HOLD` such ticks: flashed for a moment (off a wall slap, at the top of an arc) it
+    /// threw the arms out and back.
+    slow: u32,
+    glide_ahead: P,
     /// The release in play is a launch (`AFTER_LAUNCH`): the body's turn the measured turn starts from, feet
     /// first along the flight at the release.
     launch: Option<M>,
@@ -512,6 +518,8 @@ impl Default for Spidey {
             anim_mirror: false,
             after: None,
             launch: None,
+            slow: 0,
+            glide_ahead: P::new(0.0, 0.0, 1.0),
             cont: None,
             after_ahead: P::new(0.0, 0.0, 1.0),
             ground_start: false,
@@ -2134,16 +2142,21 @@ impl Spidey {
                 parts.push(("head", look(m, d)));
             }
             (parts, Place::Turn(m), true, 7)
-        } else if anim_on
-            && matches!(self.phase, Phase::Air | Phase::Fall)
-            && self.after.is_none()
-            && (v.x * v.x + v.z * v.z).sqrt() > GLIDE_SPEED
-        {
+        } else if anim_on && matches!(self.phase, Phase::Air | Phase::Fall) && self.after.is_none() && {
+            let hs = (v.x * v.x + v.z * v.z).sqrt();
+            if hs > GLIDE_SPEED {
+                self.slow = 0;
+                self.glide_ahead = P::new(v.x / hs, 0.0, v.z / hs);
+            } else {
+                self.slow += 1;
+            }
+            self.slow < GLIDE_HOLD
+        } {
             // Free flight: the trunk along the flight path, limbs from the measured flight, drifting slowly
             // between its rows so the pose is never frozen.
             let hs = (v.x * v.x + v.z * v.z).sqrt();
-            let ahead = P::new(v.x / hs, 0.0, v.z / hs);
-            let th = v.y.atan2(hs).clamp(-GLIDE_PITCH.0, GLIDE_PITCH.1);
+            let ahead = self.glide_ahead;
+            let th = v.y.atan2(hs.max(GLIDE_SPEED)).clamp(-GLIDE_PITCH.0, GLIDE_PITCH.1);
             let m = plane_turn(ahead, th);
             mirror = self.anim_mirror;
             let r = GLIDE_ROWS.0 + (GLIDE_ROWS.1 - GLIDE_ROWS.0) * (0.5 + 0.5 * (ticks as f32 * 0.12).sin());
@@ -2151,7 +2164,7 @@ impl Spidey {
             let (a, b) = (anim::AIR[i], anim::AIR[i + 1]);
             let row: [f32; 8] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f);
             let mut parts = limb_parts(&row);
-            parts.push(("head", look(m, v.norm())));
+            parts.push(("head", look(m, if v.len() > 0.1 { v.norm() } else { ahead })));
             (parts, Place::Turn(m), false, 6)
         } else if let Some((si, t0, m0)) = self.after {
             // After letting go: the same take's flip / dive / spread, the body turned as measured since the release.
