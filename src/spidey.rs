@@ -392,6 +392,9 @@ pub struct Spidey {
     anim_mirror: bool,
     /// What follows a release, in play: the take, the tick it started, the body's turn at the release.
     after: Option<(usize, u32, M)>,
+    /// What a take goes on with once its after-block has played out (`swing_anim::CONT`): the take, the tick it
+    /// started, the body's turn it started from.
+    cont: Option<(usize, u32, M)>,
     /// The release in play is a launch (`AFTER_LAUNCH`): the body's turn the measured turn starts from, feet
     /// first along the flight at the release.
     launch: Option<M>,
@@ -502,6 +505,7 @@ impl Default for Spidey {
             anim_mirror: false,
             after: None,
             launch: None,
+            cont: None,
             after_ahead: P::new(0.0, 0.0, 1.0),
             ground_start: false,
             web: None,
@@ -1898,7 +1902,17 @@ impl Spidey {
                 None => (self.ticks - t0) as usize >= anim::SWINGS[si].after_ticks,
             };
             if !anim_on || self.web.is_some() || over {
+                // Played out to its end in free flight: the take goes on with its own flight, from the turn the
+                // body has now, so nothing jumps at the join.
+                if anim_on && self.web.is_none() && self.launch.is_none() && anim::CONT_TICKS[si] > 0 {
+                    self.cont = Some((si, self.ticks, self.rot));
+                }
                 self.after = None;
+            }
+        }
+        if let Some((ci, t0, _)) = self.cont {
+            if !anim_on || self.web.is_some() || (self.ticks - t0) as usize >= anim::CONT_TICKS[ci] {
+                self.cont = None;
             }
         }
         if self.after.is_none() {
@@ -2087,6 +2101,17 @@ impl Spidey {
                 parts.push(("head", look(m, d)));
             }
             (parts, Place::Turn(m), false, 5)
+        } else if let Some((ci, t0, m0)) = self.cont {
+            // The take's own flight after its tail, turned on from where the tail left the body.
+            let r = anim::CONT[ci][((ticks - t0) as usize).min(anim::CONT_TICKS[ci] - 1)];
+            mirror = self.anim_mirror;
+            let side = if mirror { -1.0 } else { 1.0 };
+            let m = mat_mul(m0, quat_mat([r[8], r[9], r[10] * side, r[11] * side]));
+            let mut parts = limb_parts(&r);
+            if let Some(d) = fly {
+                parts.push(("head", look(m, d)));
+            }
+            (parts, Place::Turn(m), true, 7)
         } else if anim_on
             && matches!(self.phase, Phase::Air | Phase::Fall)
             && self.after.is_none()
@@ -2357,7 +2382,7 @@ impl Spidey {
             }
         }
         // A take in full play moves as fast as it was made; what starts or ends a pose is held back.
-        let held_back = !(matches!(source, 1 | 2) && snap && fade >= 1.0);
+        let held_back = !(matches!(source, 1 | 2 | 7) && snap && fade >= 1.0);
         let mut out = Vec::with_capacity(parts.len());
         for (name, target) in parts {
             let last = self
