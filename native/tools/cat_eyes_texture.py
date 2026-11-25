@@ -46,9 +46,8 @@ COATS = {
 
 
 def band(colour):
-    """The iris's foot: darker and a little warmer."""
-    r, g, b = colour
-    return (round(r * 0.78), round(g * 0.66), round(b * 0.4))
+    """The iris's foot: the iris's own colour (a darker foot read as a stripe under the eye)."""
+    return colour
 
 
 img = Image.new("RGBA", (8, len(COATS)), (0, 0, 0, 0))

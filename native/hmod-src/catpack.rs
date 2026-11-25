@@ -430,7 +430,102 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
     }
     *lock(&WORN) = worn;
     *lock(&VELOCITY) = velocity;
+    if EYES_ON.load(Ordering::Relaxed) {
+        let carriers: Vec<u32> = lock(&WORN).iter().map(|(id, _)| *id).collect();
+        let camera = host.camera().map(|c| [c.position[0] as f32, c.position[1] as f32 + c.eye_height, c.position[2] as f32]);
+        let own = host.local_player().map(|p| p.entity().id());
+        *lock(&GAZE) = carriers.into_iter().filter_map(|id| target_of(host, id, own == Some(id), camera, now)).collect();
+    } else {
+        lock(&GAZE).clear();
+    }
 }
+
+/// Per carrier, as of the last client tick: where they stand and where their cat's eyes go (the
+/// eyes of the thing it watches), in blocks.
+static GAZE: Mutex<Vec<Watch>> = Mutex::new(Vec::new());
+
+/// A carrier's entity id, where they stand, and where their cat looks.
+type Watch = (u32, [f32; 3], [f32; 3]);
+
+/// Mobs a cat keeps an eye on, and animals (and people) it watches with interest.
+const MONSTERS: [&str; 34] = [
+    "zombie", "husk", "drowned", "zombie_villager", "skeleton", "stray", "bogged", "wither_skeleton", "creeper",
+    "spider", "cave_spider", "enderman", "endermite", "silverfish", "witch", "slime", "magma_cube", "blaze",
+    "ghast", "phantom", "pillager", "vindicator", "evoker", "illusioner", "ravager", "vex", "guardian",
+    "elder_guardian", "piglin_brute", "hoglin", "zoglin", "warden", "breeze", "creaking",
+];
+const CREATURES: [&str; 40] = [
+    "chicken", "cow", "mooshroom", "pig", "sheep", "rabbit", "horse", "donkey", "mule", "llama", "trader_llama",
+    "fox", "wolf", "cat", "ocelot", "parrot", "bee", "goat", "frog", "axolotl", "turtle", "panda", "polar_bear",
+    "camel", "sniffer", "armadillo", "villager", "wandering_trader", "iron_golem", "snow_golem", "allay", "bat",
+    "squid", "glow_squid", "dolphin", "cod", "salmon", "tropical_fish", "piglin", "zombified_piglin",
+];
+
+/// What the cat on `carrier`'s back watches, by what matters most to a cat: a monster within 12
+/// blocks, else another player within 8, an animal within 7, a dropped item within 4, the nearest
+/// of the first kind there is; with none, half the time the camera looking at its own carrier (it
+/// looks back at whoever looks at it).
+fn target_of(host: &dyn mod_api::ClientHost, carrier: u32, own: bool, camera: Option<[f32; 3]>, now: u32) -> Option<Watch> {
+    let entity = host.entity(carrier)?;
+    let at = entity.position(host)?;
+    let level = entity.level(host)?;
+    let reach = 12.0;
+    let near = level.entities_in(host, at.map(|c| c - reach), at.map(|c| c + reach)).unwrap_or_default();
+    let mut best: Option<(u8, f64, [f64; 3])> = None;
+    for other in near {
+        if other.id() == carrier {
+            continue;
+        }
+        let Some(eye) = other.eye_position(host) else { continue };
+        let distance = (0..3).map(|i| (eye[i] - at[i]).powi(2)).sum::<f64>().sqrt();
+        // The client isn't told a mob's category, so it goes by the kind's name.
+        let Some(kind) = other.kind(host).map(|k| k.id(host)) else { continue };
+        let name = kind.strip_prefix("minecraft:").unwrap_or(&kind);
+        let rank = match name {
+            _ if MONSTERS.contains(&name) && distance < 12.0 => 0,
+            "player" if distance < 8.0 => 1,
+            _ if CREATURES.contains(&name) && distance < 7.0 => 2,
+            "item" if distance < 4.0 => 3,
+            _ => continue,
+        };
+        if best.is_none_or(|(r, d, _)| (rank, distance) < (r, d)) {
+            best = Some((rank, distance, eye));
+        }
+    }
+    let to = match best {
+        Some((_, _, eye)) => eye.map(|c| c as f32),
+        // Half of every ten seconds, the camera, if it is looking at this carrier from outside.
+        None if own && (now / 100).is_multiple_of(2) => camera?,
+        None => return None,
+    };
+    Some((carrier, at.map(|c| c as f32), to))
+}
+
+/// The turn and nod the cat on `carrier`'s back (facing away from their back, turned as `body_rot`)
+/// needs to look at its target, from the pose's own; none when the target is behind the carrier.
+fn gaze_of(carrier: u32, body_rot: f32, t: &Tune) -> Option<[f32; 2]> {
+    let (at, to) = lock(&GAZE).iter().find(|(id, ..)| *id == carrier).map(|(_, at, to)| (*at, *to))?;
+    let facing = (body_rot + 180.0).to_radians();
+    let ahead = [-facing.sin(), facing.cos()];
+    // The cat's head: over the carrier's shoulders, a little behind their back.
+    let head = [at[0] + ahead[0] * 0.35, at[1] + 1.45, at[2] + ahead[1] * 0.35];
+    let d = [to[0] - head[0], to[1] - head[1], to[2] - head[2]];
+    let yaw = (-d[0]).atan2(d[2]).to_degrees();
+    let mut turn = (yaw - (body_rot + 180.0)).rem_euclid(360.0);
+    if turn > 180.0 {
+        turn -= 360.0;
+    }
+    if turn.abs() > 110.0 {
+        return None;
+    }
+    let nod = -(d[1].atan2(d[0].hypot(d[2]))).to_degrees();
+    let [pose_nod, pose_turn, _] = t.get("head_rot");
+    Some([GAZE_TURN * turn - pose_turn, GAZE_NOD * nod - pose_nod])
+}
+
+/// Which way the head's turn and nod go against the world's (checked in the game).
+const GAZE_TURN: f32 = 1.0;
+const GAZE_NOD: f32 = 1.0;
 
 /// The bag a stack is, by its `custom_data`: `catpack` names the kind, `catpack_cat` the variant.
 fn worn_by(stack: &mod_api::ItemStack) -> Option<Worn> {
@@ -763,6 +858,9 @@ struct Carrier {
     swing: f32,
     /// The bag is in a hand, before its holder's eyes.
     held: bool,
+    /// Where something worth looking at is, as a turn and a nod of the cat's head (degrees, on
+    /// top of the pose's), when the eyes are on and something is in sight (`gaze`).
+    gaze: Option<[f32; 2]>,
 }
 
 fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
@@ -779,6 +877,7 @@ fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
             velocity: lock(&VELOCITY).iter().find(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| *v),
             swing: 0.0,
             held: false,
+            gaze: gaze_of(entity.id, living.map_or(0.0, |l| l.body_rot), t),
         },
         t,
     )
@@ -786,7 +885,7 @@ fn motion(entity: &EntityRenderState, t: &Tune) -> Frame {
 
 fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
     let [amount, _, _] = t.get("idle");
-    let Carrier { key, age, hurt, body_rot, walk, stride, velocity, swing, held } = *carrier;
+    let Carrier { key, age, hurt, body_rot, walk, stride, velocity, swing, held, gaze } = *carrier;
     let mut all = lock(&MOTION);
     // Carriers not drawn for a while are forgotten (their age stops while they aren't).
     if all.len() > 64 {
@@ -859,6 +958,10 @@ fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
     } else if chance(key, slot, 3) < 0.25 {
         // Now and then it looks round at its carrier.
         look = [48.0, -14.0];
+    }
+    // Something in sight: the cat looks at it, and holds the look.
+    if let Some(at) = gaze {
+        look = at;
     }
     if since >= PEEK_AT && since < OUT_AT {
         look = [if since < (PEEK_AT + OUT_AT) / 2.0 { -38.0 } else { 30.0 }, 4.0];
@@ -1195,6 +1298,7 @@ impl EntityRenderLayer for Layer {
                         velocity: lock(&VELOCITY).iter().find(|(id, _)| *id == entity.id).map_or([0.0; 3], |(_, v)| *v),
                         swing: 0.0,
                         held: true,
+                        gaze: None,
                     },
                     &tune,
                 )
@@ -1336,6 +1440,7 @@ pub fn render_hand(host: &dyn mod_api::ClientHost, event: &mut mod_api::RenderHa
                 velocity,
                 swing: event.render.swing,
                 held: true,
+                gaze: None,
             },
             &tune,
         )

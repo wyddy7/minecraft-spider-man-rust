@@ -136,7 +136,7 @@ impl Hooks for Mod {
             .tooltip("After 3 s in the air the top speed rises over 5 s by this much; landing resets it. 0 = the usual top speed.");
         let _ = r.register_setting(speed);
         let eyes = SettingSpec::choice(EYES, "Cartoon cat eyes", ["off", "on"], 0)
-            .tooltip("The cat in the backpack gets big cartoon eyes in its coat's colours, which blink, glance and show how it feels.");
+            .tooltip("A grown cat in the backpack gets big cartoon eyes in its coat's colours, which blink, glance and show how it feels (kittens not yet).");
         let _ = r.register_setting(eyes);
         // The page has no button row, so the reset is a row with one thing to click: it reads
         // "click here", does its work on the click and reads "done" until the page is opened again.
