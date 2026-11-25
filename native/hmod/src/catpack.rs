@@ -187,34 +187,27 @@ fn quad(x0: f32, y0: f32, x1: f32, y1: f32, z: f32, [ua, va, ub, vb]: [f32; 4], 
 /// The eyes' own model, on the palette `EYE_SPRITE`: a root turned half round as the cat's
 /// (`assemble`) and a `head` posed each frame as the cat's. Per eye, every face a flat colour and
 /// every edge straight (crisp at any distance): a patch of the face's colour behind it (the game's
-/// painted eyes never show), the iris (a rectangle with its outer top corner stepped and an amber
-/// band at its foot), the pupil (a rectangle, its lower part wine) moved and scaled freely, and two
-/// lids, four-cornered faces whose corners move each frame: the top one closes, and slants into an
-/// angry or a worried brow; the bottom one rises.
+/// painted eyes never show), the iris (a rectangle with its outer top corner stepped) and the pupil
+/// (a rectangle, its lower part wine). There are no lids: each frame the iris and the pupil are cut
+/// along the lids' lines instead (`pose_eyes`), so the face's patch shows where a lid would be and
+/// nothing lies over the eye to show at its edges.
 fn eyes() -> ModelPart {
     let mut parts = Vec::new();
     for (side, (x0, name)) in EYE_X.into_iter().zip(EYES_PARTS).enumerate() {
         let (x1, y0, y1) = (x0 + EYE_W, EYE_TOP, EYE_TOP + EYE_H);
-        let [step, band] = [0.35, 0.3];
+        let step = STEP;
         // The outer side: eye 0's is -x (the head's edge), eye 1's +x.
-        let (sx0, sx1) = if side == 0 { (x0 + step, x1) } else { (x0, x1 - step) };
+        let (sx0, sx1) = step_span(side, x0);
         let iris = colour(0, Slot::Iris);
         let polygons = vec![
             quad(x0, y0, x1, y1, EYE_FRONT + 0.01, colour(0, Slot::Face), 0.0),
             quad(sx0, y0, sx1, y0 + step, EYE_FRONT, iris, 0.0),
-            quad(x0, y0 + step, x1, y1 - band, EYE_FRONT, iris, 0.0),
-            quad(x0, y1 - band, x1, y1, EYE_FRONT, colour(0, Slot::Band), 0.0),
+            quad(x0, y0 + step, x1, y1, EYE_FRONT, iris, 0.0),
         ];
-        let [w, h] = PUPIL.map(|s| s * 0.5);
+        // The pupil's two faces, placed in the eye's frame each frame (`pose_eyes`).
         let z = EYE_FRONT - 0.01;
-        let split = h * 0.2;
-        let pupil = vec![quad(-w, -h, w, split, z, colour(0, Slot::Pupil), 0.0), quad(-w, split, w, h, z, colour(0, Slot::PupilLow), 0.0)];
-        let lid = || ModelPart::new(vec![quad(x0, y0, x1, y0, EYE_FRONT - 0.02, colour(0, Slot::Face), 0.0)], Vec::new(), PartPose::ZERO);
-        let children = vec![
-            ("pupil".to_owned(), ModelPart::new(pupil, Vec::new(), PartPose::ZERO)),
-            ("top".to_owned(), lid()),
-            ("bottom".to_owned(), lid()),
-        ];
+        let pupil = vec![quad(0.0, 0.0, 0.0, 0.0, z, colour(0, Slot::Pupil), 0.0), quad(0.0, 0.0, 0.0, 0.0, z, colour(0, Slot::PupilLow), 0.0)];
+        let children = vec![("pupil".to_owned(), ModelPart::new(pupil, Vec::new(), PartPose::ZERO))];
         parts.push((name.to_owned(), ModelPart::new(polygons, children, PartPose::ZERO)));
     }
     let head = ModelPart::new(Vec::new(), parts, PartPose::ZERO);
@@ -225,14 +218,12 @@ fn eyes() -> ModelPart {
 /// are the coats in `VARIANTS`' order.
 #[derive(Clone, Copy)]
 enum Slot {
-    Iris,
-    Band,
-    Pupil,
-    PupilLow,
-    Face,
-    /// The second eye's iris and band: the white cat's odd eyes (the others repeat the first's).
-    Iris2,
-    Band2,
+    Iris = 0,
+    Pupil = 2,
+    PupilLow = 3,
+    Face = 4,
+    /// The second eye's iris: the white cat's odd eyes (the others repeat the first's).
+    Iris2 = 5,
 }
 
 /// Texture coordinates putting a whole face on the palette's texel for `coat`'s `slot`.
@@ -432,7 +423,7 @@ pub fn tick(host: &dyn mod_api::ClientHost) {
     *lock(&VELOCITY) = velocity;
     if EYES_ON.load(Ordering::Relaxed) {
         let carriers: Vec<u32> = lock(&WORN).iter().map(|(id, _)| *id).collect();
-        let camera = host.camera().map(|c| [c.position[0] as f32, c.position[1] as f32 + c.eye_height, c.position[2] as f32]);
+        let camera = host.camera().map(|c| c.position.map(|v| v as f32));
         let own = host.local_player().map(|p| p.entity().id());
         *lock(&GAZE) = carriers.into_iter().filter_map(|id| target_of(host, id, own == Some(id), camera, now)).collect();
     } else {
@@ -495,7 +486,8 @@ fn target_of(host: &dyn mod_api::ClientHost, carrier: u32, own: bool, camera: Op
     let to = match best {
         Some((_, _, eye)) => eye.map(|c| c as f32),
         // Half of every ten seconds, the camera, if it is looking at this carrier from outside.
-        None if own && (now / 100).is_multiple_of(2) => camera?,
+        // (A close debug camera is not someone looking: only one 2.5 blocks off or more.)
+        None if own && (now / 100).is_multiple_of(2) => camera.filter(|c| (0..3).map(|i| (c[i] - at[i] as f32).powi(2)).sum::<f32>() > 6.25)?,
         None => return None,
     };
     Some((carrier, at.map(|c| c as f32), to))
@@ -518,7 +510,7 @@ fn gaze_of(carrier: u32, body_rot: f32, t: &Tune) -> Option<[f32; 2]> {
     if turn.abs() > 110.0 {
         return None;
     }
-    let nod = -(d[1].atan2(d[0].hypot(d[2]))).to_degrees();
+    let nod = -(d[1].atan2(d[0].hypot(d[2]))).to_degrees().clamp(-30.0, 30.0);
     let [pose_nod, pose_turn, _] = t.get("head_rot");
     Some([GAZE_TURN * turn - pose_turn, GAZE_NOD * nod - pose_nod])
 }
@@ -1196,49 +1188,61 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame, coat: usize) {
     let size = [PUPIL[0] * grow[0], PUPIL[1] * grow[1]];
     // How far the pupil's middle may go from the eye's, so the pupil stays inside it.
     let reach = [(EYE_W - size[0]) * 0.5, (EYE_H - size[1]) * 0.5];
-    let face = colour(coat, Slot::Face);
     for (side, x0) in EYE_X.iter().enumerate() {
         let Some(eye) = head.get_child_mut(EYES_PARTS[side]) else { continue };
-        // The coat's colours: the face patch, the iris (two faces) and its band.
-        let (iris, band) = if side == 0 { (Slot::Iris, Slot::Band) } else { (Slot::Iris2, Slot::Band2) };
-        for (polygon, slot) in eye.polygons.iter_mut().zip([Slot::Face, iris, iris, band]) {
+        // The coat's colours: the face patch and the iris's two faces.
+        let iris = if side == 0 { Slot::Iris } else { Slot::Iris2 };
+        for (polygon, slot) in eye.polygons.iter_mut().zip([Slot::Face, iris, iris]) {
             paint(polygon, colour(coat, slot));
         }
+        // The lids' lines: the top one comes down (further at the nose when angry, at the outside
+        // when worried), the bottom one rises.
+        let (x1, y0, y1) = (x0 + EYE_W, EYE_TOP, EYE_TOP + EYE_H);
+        let down = |extra: f32| y0 + (e.top + extra).clamp(0.0, 1.0) * EYE_H;
+        let (outer, inner) = (down(e.worried * 0.7), down(e.angry * 0.7));
+        let (at_x0, at_x1) = if side == 0 { (outer, inner) } else { (inner, outer) };
+        let top = |x: f32| at_x0 + (at_x1 - at_x0) * (x - x0) / EYE_W;
+        let floor = y1 - e.bottom.clamp(0.0, 1.0) * EYE_H * 0.6;
+        let (sx0, sx1) = step_span(side, *x0);
+        let cut = |polygon: &mut ModelPolygon, [ax, ay, bx, by]: [f32; 4]| {
+            let (b, t) = (by.min(floor), |x: f32| ay.max(top(x)));
+            // Right top, left top, left bottom, right bottom; a top never below its bottom.
+            shape(polygon, [[bx, t(bx).min(b)], [ax, t(ax).min(b)], [ax, b], [bx, b]], None);
+        };
+        cut(&mut eye.polygons[1], [sx0, y0, sx1, y0 + STEP]);
+        cut(&mut eye.polygons[2], [*x0, y0 + STEP, x1, y1]);
         if let Some(pupil) = eye.get_child_mut("pupil") {
-            for (polygon, slot) in pupil.polygons.iter_mut().zip([Slot::Pupil, Slot::PupilLow]) {
-                paint(polygon, colour(coat, slot));
-            }
             // Eye 0's nose side is +x, eye 1's -x.
             let x = (e.pupil[0] + if side == 0 { e.cross } else { -e.cross }).clamp(-1.0, 1.0);
-            pupil.set_pos(x0 + EYE_W * 0.5 + x * reach[0], EYE_TOP + EYE_H * 0.5 + e.pupil[1] * reach[1], 0.0);
-            pupil.x_scale = grow[0];
-            pupil.y_scale = grow[1];
-        }
-        // How far down the top lid reaches at the eye's outer and inner side: an angry brow drops
-        // the inner side, a worried one the outer.
-        let (x1, y0, y1) = (x0 + EYE_W, EYE_TOP, EYE_TOP + EYE_H);
-        let down = |extra: f32| ((e.top + extra).clamp(0.0, 1.0)) * (EYE_H + 0.02);
-        let (outer, inner) = (down(e.worried * 0.7), down(e.angry * 0.7));
-        let (left, right) = if side == 0 { (outer, inner) } else { (inner, outer) };
-        if let Some(lid) = eye.get_child_mut("top") {
-            lid.visible = left.max(right) > 0.01;
-            // Right top, left top, left bottom, right bottom.
-            shape(&mut lid.polygons[0], [[x1, y0], [*x0, y0], [*x0, y0 + left], [x1, y0 + right]], face);
-        }
-        if let Some(lid) = eye.get_child_mut("bottom") {
-            let up = e.bottom.clamp(0.0, 1.0) * EYE_H * 0.6;
-            lid.visible = up > 0.01;
-            shape(&mut lid.polygons[0], [[x1, y1 - up], [*x0, y1 - up], [*x0, y1 + 0.01], [x1, y1 + 0.01]], face);
+            let (cx, cy) = (x0 + EYE_W * 0.5 + x * reach[0], y0 + EYE_H * 0.5 + e.pupil[1] * reach[1]);
+            let (w, h) = (size[0] * 0.5, size[1] * 0.5);
+            let split = cy + h * 0.2;
+            let [dark, low] = &mut pupil.polygons[..] else { continue };
+            paint(dark, colour(coat, Slot::Pupil));
+            paint(low, colour(coat, Slot::PupilLow));
+            cut(dark, [cx - w, cy - h, cx + w, split]);
+            cut(low, [cx - w, split, cx + w, cy + h]);
         }
     }
 }
 
-/// Moves `quad`'s four corners to `corners` (x, y; its depth kept) and colours it `uv`.
-fn shape(quad: &mut ModelPolygon, corners: [[f32; 2]; 4], uv: [f32; 4]) {
+/// The iris's top strip: the eye's width short of its stepped outer corner (eye 0's outside is
+/// -x, the head's edge; eye 1's +x).
+fn step_span(side: usize, x0: f32) -> (f32, f32) {
+    if side == 0 { (x0 + STEP, x0 + EYE_W) } else { (x0, x0 + EYE_W - STEP) }
+}
+
+/// How far the iris's outer top corner is stepped in, in texels.
+const STEP: f32 = 0.35;
+
+/// Moves `quad`'s four corners to `corners` (x, y; its depth kept), and colours it `uv` if given.
+fn shape(quad: &mut ModelPolygon, corners: [[f32; 2]; 4], uv: Option<[f32; 4]>) {
     for (vertex, [x, y]) in quad.vertices.iter_mut().zip(corners) {
         vertex.pos[0] = x;
         vertex.pos[1] = y;
-        (vertex.u, vertex.v) = (uv[0], uv[1]);
+        if let Some(uv) = uv {
+            (vertex.u, vertex.v) = (uv[0], uv[1]);
+        }
     }
 }
 
