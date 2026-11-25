@@ -15,13 +15,43 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use mod_api::{
     BlockEntityDrawContext, CubeListBuilder, EntityRenderLayer, EntityRenderState,
-    HumanoidPart, LayerDefinition, LayerTarget, MeshDefinition, ModelPart, ModelPolygon, PartPose,
+    HumanoidPart, LayerDefinition, LayerTarget, MeshDefinition, ModelPart, ModelPolygon, ModelVertex, PartPose,
     PlayerModel, PosedParts,
 };
 
 /// The bag's texture: `assets/spider_man/textures/entity/catpack.png` (made by
 /// `native/tools/catpack_texture.py`).
 const BAG_SPRITE: &str = "spider_man:entity/catpack";
+
+/// The grown cat's eyes, `assets/spider_man/textures/entity/cat_eyes.png` (made by
+/// `native/tools/cat_eyes_texture.py`): a yellow iris standing out of the game's head, a dark pupil
+/// that moves freely in it, and lids in the cat's own fur. Proportions after the measured reference
+/// (an 8-wide head: eyes 3 wide and 3.6 tall, flush with its sides, 2.1 apart, the pupil 1.85 by
+/// 1.9), scaled to the cat's 5-wide face.
+const EYE_SPRITE: &str = "spider_man:entity/cat_eyes";
+/// In the grown cat's centred head frame (the head 5×4×5 from (-2.5, -2, -2.5), +y down, the face
+/// at z -2.5 towards -z, the nose 3×2 a pixel out at the bottom): each eye's left edge, its top,
+/// its size, its front (a quarter texel out of the face) and the face behind it.
+const EYE_X: [f32; 2] = [-2.5, 0.5];
+const EYE_TOP: f32 = -1.95;
+const EYE_W: f32 = 2.0;
+const EYE_H: f32 = 2.25;
+const EYE_FRONT: f32 = -2.75;
+const FACE: f32 = -2.5;
+/// The pupil at rest: round-ish and big, a cartoon's (the reference's 1.85 × 1.9 of an 8-wide head).
+/// Dilating, it grows; scared, it narrows to an upright slit.
+const PUPIL: [f32; 2] = [1.1, 1.2];
+const DILATE: [f32; 2] = [0.35, 0.3];
+const SLIT: [f32; 2] = [-0.68, 0.15];
+/// The iris's corners are cut by this much (x, y), so the eye reads round, as the reference's does.
+const ROUND: [f32; 2] = [0.3, 0.35];
+/// The forehead texel of the cat texture the lids are coloured from (the head's front face starts at 5, 5).
+const LID_UV: [f32; 2] = [7.0, 5.0];
+/// Each eye's lids (top, bottom, angry brow, worried brow) and pupil, by name.
+const LIDS: [[&str; 4]; 2] = [["lid0_top", "lid0_bottom", "lid0_angry", "lid0_worried"], ["lid1_top", "lid1_bottom", "lid1_angry", "lid1_worried"]];
+const PUPILS: [&str; 2] = ["pupil0", "pupil1"];
+/// The coats the eyes are tried on: the siamese and the black-and-white.
+const EYED: [&str; 2] = ["siamese", "black"];
 
 /// The cat variants: the texture `entity/cat/cat_<name>`.
 pub const VARIANTS: [&str; 11] = [
@@ -84,6 +114,7 @@ static SEEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 static KITTEN: Mutex<Option<ModelPart>> = Mutex::new(None);
 static CAT: Mutex<Option<ModelPart>> = Mutex::new(None);
 static BAG: Mutex<Option<ModelPart>> = Mutex::new(None);
+static EYES: Mutex<Option<ModelPart>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -144,6 +175,82 @@ pub fn bake(host: &dyn mod_api::ClientHost) {
     *lock(&CAT) = head("minecraft:cat#main").map(cat);
     *lock(&KITTEN) = head("minecraft:cat_baby#main").map(kitten);
     *lock(&BAG) = Some(bag());
+    *lock(&EYES) = Some(eyes());
+}
+
+/// A quad facing -z from (`x0`, `y0`) to (`x1`, `y1`) at depth `z`, its texture from (`ua`, `va`)
+/// to (`ub`, `vb`), 0 to 1. With `tri`, its bottom outer corner is pulled to the top outer one: a
+/// triangle, `tri` saying which side (-1 left, 1 right) keeps its full height.
+fn quad(x0: f32, y0: f32, x1: f32, y1: f32, z: f32, [ua, va, ub, vb]: [f32; 4], tri: f32) -> ModelPolygon {
+    let (left_bottom, right_bottom) = match tri {
+        t if t > 0.0 => (y0, y1),
+        t if t < 0.0 => (y1, y0),
+        _ => (y1, y1),
+    };
+    let v = |x: f32, y: f32, u: f32, w: f32| ModelVertex::new([x, y, z], u, w);
+    ModelPolygon::new([v(x1, y0, ub, va), v(x0, y0, ua, va), v(x0, left_bottom, ua, vb), v(x1, right_bottom, ub, vb)], [0.0, 0.0, -1.0])
+}
+
+/// A face of one flat colour: every corner on the middle of the texel (`u`, `v`) of a `size` texture.
+fn solid(u: f32, v: f32, size: [f32; 2]) -> [f32; 4] {
+    let (u, v) = ((u + 0.5) / size[0], (v + 0.5) / size[1]);
+    [u, v, u, v]
+}
+
+/// The grown cat's head with the eyes' lids added, on the cat's own forehead fur so every variant's
+/// lids match its coat: per eye a top lid hanging from the eye's top edge, a bottom lid standing
+/// on its bottom edge, and two slanted brows (down to the inner corner, down to the outer), each
+/// scaled from its edge by how far it is closed.
+fn with_lids(head: ModelPart) -> ModelPart {
+    let fur = solid(LID_UV[0], LID_UV[1], [64.0, 32.0]);
+    let z = EYE_FRONT - 0.02;
+    let mut children: Vec<(String, ModelPart)> = head.children().map(|(n, p)| (n.to_owned(), p.clone())).collect();
+    for (side, (x0, names)) in EYE_X.iter().zip(LIDS).enumerate() {
+        let (x1, inner) = (x0 + EYE_W, if side == 0 { 1.0 } else { -1.0 });
+        let shapes = [
+            (quad(*x0, 0.0, x1, EYE_H, z, fur, 0.0), EYE_TOP),
+            (quad(*x0, -EYE_H, x1, 0.0, z, fur, 0.0), EYE_TOP + EYE_H),
+            (quad(*x0, 0.0, x1, EYE_H, z, fur, inner), EYE_TOP),
+            (quad(*x0, 0.0, x1, EYE_H, z, fur, -inner), EYE_TOP),
+        ];
+        for (name, (polygon, y)) in names.into_iter().zip(shapes) {
+            children.push((name.to_owned(), ModelPart::new(vec![polygon], Vec::new(), PartPose::offset(0.0, y, 0.0))));
+        }
+    }
+    ModelPart::new(head.polygons.clone(), children, head.initial_pose())
+}
+
+/// The eyes' own model, on `EYE_SPRITE`: a root turned half round as the cat's (`assemble`) and a
+/// `head` posed each frame as the cat's, holding each eye (the iris standing out of the face, its
+/// sides, the top darker under the lid and the bottom amber) and its pupil, a free quad moved and
+/// scaled each frame.
+fn eyes() -> ModelPart {
+    const T: [f32; 2] = [8.0, 16.0];
+    let side = solid(4.0, 0.0, T);
+    let mut polygons = Vec::new();
+    let mut parts = Vec::new();
+    for (x0, pupil) in EYE_X.into_iter().zip(PUPILS) {
+        let (x1, y0, y1) = (x0 + EYE_W, EYE_TOP, EYE_TOP + EYE_H);
+        // The iris: a full-height middle and two shorter side strips, its corners cut.
+        let ramp = |ya: f32, yb: f32| [0.0, (ya - y0) / EYE_H, 4.0 / T[0], (yb - y0) / EYE_H];
+        let [cx, cy] = ROUND;
+        polygons.push(quad(x0 + cx, y0, x1 - cx, y1, EYE_FRONT, ramp(y0, y1), 0.0));
+        polygons.push(quad(x0, y0 + cy, x0 + cx, y1 - cy, EYE_FRONT, ramp(y0 + cy, y1 - cy), 0.0));
+        polygons.push(quad(x1 - cx, y0 + cy, x1, y1 - cy, EYE_FRONT, ramp(y0 + cy, y1 - cy), 0.0));
+        // The sides, from the iris back into the face: top, bottom, left, right.
+        let v = |x: f32, y: f32, z: f32| ModelVertex::new([x, y, z], side[0], side[1]);
+        let (zf, zb) = (EYE_FRONT, FACE);
+        polygons.push(ModelPolygon::new([v(x1, y0, zb), v(x0, y0, zb), v(x0, y0, zf), v(x1, y0, zf)], [0.0, -1.0, 0.0]));
+        polygons.push(ModelPolygon::new([v(x1, y1, zf), v(x0, y1, zf), v(x0, y1, zb), v(x1, y1, zb)], [0.0, 1.0, 0.0]));
+        polygons.push(ModelPolygon::new([v(x0, y0, zf), v(x0, y0, zb), v(x0, y1, zb), v(x0, y1, zf)], [-1.0, 0.0, 0.0]));
+        polygons.push(ModelPolygon::new([v(x1, y0, zb), v(x1, y0, zf), v(x1, y1, zf), v(x1, y1, zb)], [1.0, 0.0, 0.0]));
+        let [w, h] = PUPIL.map(|s| s * 0.5);
+        // Black above, a dark wine below, as the reference's pupil.
+        let dot = quad(-w, -h, w, h, EYE_FRONT - 0.01, [5.25 / T[0], 0.0, 5.75 / T[0], 2.0 / T[1]], 0.0);
+        parts.push((pupil.to_owned(), ModelPart::new(vec![dot], Vec::new(), PartPose::ZERO)));
+    }
+    let head = ModelPart::new(polygons, parts, PartPose::ZERO);
+    ModelPart::new(Vec::new(), vec![("head".to_owned(), head)], PartPose::rotation(0.0, std::f32::consts::PI, 0.0))
 }
 
 /// One box's faces, baked on a `texture` of that many texels at the box-UV place (`u`, `v`).
@@ -238,7 +345,7 @@ fn cat(head: ModelPart) -> ModelPart {
         ("thin_r", thin()),
         ("thin_l", thin()),
     ];
-    assemble(centred(head, [0.0, 0.0, -0.5]), body, legs)
+    assemble(with_lids(centred(head, [0.0, 0.0, -0.5])), body, legs)
 }
 
 /// The kitten, on its 32×32 texture.
@@ -581,6 +688,25 @@ struct Motion {
     roll: Spring,
     lean: Spring,
     bob: Spring,
+    /// The eyes, eased towards the mood's each tick.
+    eyes: EyeFrame,
+}
+
+/// The eyes: the pupil's place (-1 to 1 of its reach, x then y in the head's frame) and how much
+/// bigger than at rest it is; how far each lid is closed, 0 to 1 (the top, the bottom, a brow
+/// slanting down to the inner corner, one slanting down to the outer).
+#[derive(Clone, Copy, Default)]
+struct EyeFrame {
+    pupil: [f32; 2],
+    /// How far the pupils have narrowed to a slit, 0 to 1 (fright).
+    slit: f32,
+    /// How far both pupils are drawn towards the nose (a glare), -1 to 1 of their reach.
+    cross: f32,
+    dilate: f32,
+    top: f32,
+    bottom: f32,
+    angry: f32,
+    worried: f32,
 }
 
 /// What `Motion` gives a frame's pose.
@@ -597,6 +723,7 @@ struct Frame {
     /// The paws' kneading, degrees each.
     knead: [f32; 2],
     hidden: bool,
+    eyes: EyeFrame,
 }
 
 static MOTION: Mutex<Vec<Motion>> = Mutex::new(Vec::new());
@@ -679,6 +806,7 @@ fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
             roll: Spring::default(),
             lean: Spring::default(),
             bob: Spring::default(),
+            eyes: EyeFrame::default(),
         });
         all.len() - 1
     });
@@ -774,6 +902,7 @@ fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
     let press = (age * 0.45).sin();
     // The hand swings and the cat swats with it: one paw out and back, the head after it.
     let swat = if hiding { 0.0 } else { (swing.clamp(0.0, 1.0) * std::f32::consts::PI).sin() };
+    let eyes = eyes_of(m, key, age, dt, since, hiding, [yaw_to, pitch_to], rise, rush, walk, kneading, swat, held, slot);
     Frame {
         duck: m.duck.x,
         paws: [m.paws[0].x, m.paws[1].x],
@@ -785,7 +914,127 @@ fn motion_of(carrier: &Carrier, t: &Tune) -> Frame {
         bob: m.bob.x.clamp(-1.2, 1.6),
         knead: [9.0 * kneading * press.max(0.0) - 46.0 * swat, 9.0 * kneading * (-press).max(0.0) - 12.0 * swat],
         hidden: m.duck.x > 0.9 && m.lid.x > 0.93,
+        eyes,
     }
+}
+
+/// A blink `p` ticks in, 0 open to 1 shut, as measured on the reference at 60 fps: down in 4
+/// frames, shut 3, up in 6, the lid sliding smoothly.
+fn blink(p: f32) -> f32 {
+    match p {
+        p if !(0.0..4.33).contains(&p) => 0.0,
+        p if p < 1.33 => p / 1.33,
+        p if p < 2.33 => 1.0,
+        p => {
+            let t = 1.0 - (p - 2.33) / 2.0;
+            t * t * (3.0 - 2.0 * t)
+        }
+    }
+}
+
+/// A cat's slow blink (what a content cat gives the one it trusts): down over 6 ticks, shut 8, up 6.
+fn slow_blink(p: f32) -> f32 {
+    match p {
+        p if !(0.0..20.0).contains(&p) => 0.0,
+        p if p < 6.0 => p / 6.0,
+        p if p < 14.0 => 1.0,
+        p => 1.0 - (p - 14.0) / 6.0,
+    }
+}
+
+/// The eyes this frame. The pupil darts from place to place across the whole eye (measured at
+/// 60 fps: moves of 1 to 6 frames, often a single one; holds of 0.1 to 0.55 s) and leads the head's
+/// turns. It grows in about 0.17 s; a fright narrows it to a slit at once. Lids come in from the top and the bottom and as a slanted
+/// brow, each snapping in within a tick or two; a blink every few seconds and at most new looks. The mood
+/// follows what happens to the carrier.
+#[allow(clippy::too_many_arguments)]
+fn eyes_of(
+    m: &mut Motion,
+    key: u32,
+    age: f32,
+    dt: f32,
+    since: f32,
+    hiding: bool,
+    head_to: [f32; 2],
+    rise: f32,
+    rush: f32,
+    walk: f32,
+    kneading: f32,
+    swat: f32,
+    held: bool,
+    slot: i32,
+) -> EyeFrame {
+    let into = (age + (key % 97) as f32 * 7.0).rem_euclid(60.0);
+    let peeking = (PEEK_AT..OUT_AT).contains(&since);
+    let started = since < FLINCH + 8.0;
+    let grumpy = (OUT_AT..OUT_AT + 70.0).contains(&since);
+    let at_carrier = !held && chance(key, slot, 3) < 0.25;
+    let drowsy = walk < 0.05 && chance(key, slot, 14) < 0.05;
+
+    // The mood: (top, bottom, angry brow, worried brow, dilation) and where it holds the pupils, if
+    // anywhere (towards the nose, down): the eye gives the shape, the pupil the look. Angry, the
+    // reference drops the pupils down and in under the brow (a glare); worried, up and in.
+    // A fright narrows the pupils to slits (wide eyes, slit pupils); calm, they stay round.
+    let ((top, bottom, angry, worried, dilate, slit), fixed) = match () {
+        _ if started => ((0.0, 0.0, 0.0, 0.0, 0.0, 1.0), Some([0.0, 0.0])),
+        _ if hiding && !peeking => ((1.0, 0.0, 0.0, 0.0, 0.0, 0.0), None),
+        _ if peeking => ((0.3, 0.3, 0.0, 0.55, 0.0, 0.7), None),
+        _ if grumpy || swat > 0.3 => ((0.0, 0.0, 0.65, 0.0, 0.0, 0.0), Some([0.8, 0.85])),
+        _ if rise < -0.55 => ((0.0, 0.0, 0.0, 0.0, 0.0, 1.0), Some([0.0, -0.6])),
+        _ if rush > 0.5 => ((0.38, 0.38, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.0])),
+        _ if kneading > 0.0 => ((0.0, 0.3, 0.0, 0.0, 0.3, 0.0), None),
+        _ if held => ((0.0, 0.0, 0.0, 0.0, 1.0, 0.0), None),
+        _ if drowsy => ((0.45, 0.0, 0.0, 0.0, 0.0, 0.0), Some([0.0, 0.5])),
+        _ => ((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), None),
+    };
+    // Where to look: a new glance every 4 ticks, kept for one to three of them (holds of 0.2 to
+    // 0.6 s), plus where the head is still turning to (a positive turn looks to -x, a positive
+    // nod down, +y).
+    let g = ((age + (key % 31) as f32 * 3.0) / 4.0).floor() as i32;
+    let g = g - (chance(key, g, 20) * 3.0) as i32 % 3;
+    let glance = if hiding || chance(key, g, 21) < 0.3 { [0.0; 2] } else { [chance(key, g, 22) * 2.0 - 1.0, chance(key, g, 23) * 2.0 - 1.0] };
+    let (look, cross) = match fixed {
+        Some([cross, down]) => ([0.0, down], cross),
+        None => (
+            [(glance[0] - (head_to[0] - m.yaw.x) / 14.0).clamp(-1.0, 1.0), (glance[1] + (head_to[1] - m.pitch.x) / 12.0).clamp(-1.0, 1.0)],
+            0.0,
+        ),
+    };
+    if dt > 0.0 {
+        let e = &mut m.eyes;
+        let ease = |x: &mut f32, to: f32, rate: f32| *x += (to - *x) * (1.0 - (-rate * dt).exp());
+        ease(&mut e.pupil[0], look[0], 6.0);
+        ease(&mut e.pupil[1], look[1], 6.0);
+        ease(&mut e.cross, cross, 6.0);
+        ease(&mut e.dilate, dilate, 1.2);
+        // A fright narrows them at once; they open again slower.
+        let rate = if slit > e.slit { 4.0 } else { 0.8 };
+        ease(&mut e.slit, slit, rate);
+        // Moods snap, as a cat's face does: there in a tick or two, then held.
+        ease(&mut e.top, top, 2.5);
+        ease(&mut e.bottom, bottom, 2.5);
+        ease(&mut e.angry, angry, 2.5);
+        ease(&mut e.worried, worried, 2.5);
+    }
+
+    // Blinks: one at a place in every 70 ticks (now and then a double), and one as most new looks begin.
+    let bslot = ((age + (key % 53) as f32 * 5.0) / 70.0).floor() as i32;
+    let p = age - (bslot as f32 * 70.0 - (key % 53) as f32 * 5.0 + chance(key, bslot, 11) * 40.0);
+    let mut shut = blink(p);
+    if chance(key, bslot, 12) < 0.25 {
+        shut = shut.max(blink(p - 7.0));
+    }
+    if chance(key, slot, 13) < 0.7 {
+        shut = shut.max(blink(into - 1.0));
+    }
+    if at_carrier {
+        shut = shut.max(slow_blink(into - 12.0));
+    } else if drowsy {
+        shut = shut.max(slow_blink(into - 20.0));
+    }
+    let mut out = m.eyes;
+    out.top = out.top.max(shut);
+    out
 }
 
 /// Poses the cat for this frame as `f` holds it.
@@ -813,6 +1062,15 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
         place(head, "head_at", f.duck, f.bob);
         let [rx, ry, rz] = rad(t.get("head_rot"));
         head.set_rotation(rx + f.pitch.to_radians(), ry + f.yaw.to_radians(), rz + f.roll.to_radians());
+        // The lids, each scaled down from its edge by how far it is closed.
+        for names in LIDS {
+            for (name, amount) in names.into_iter().zip([f.eyes.top, f.eyes.bottom, f.eyes.angry, f.eyes.worried]) {
+                if let Some(lid) = head.get_child_mut(name) {
+                    lid.visible = amount > 0.005;
+                    lid.y_scale = amount.max(0.005);
+                }
+            }
+        }
     }
     let kind = t.get("paw")[0] as i32;
     for (name, at, rot, of_kind, side) in [
@@ -828,6 +1086,28 @@ fn pose(cat: &mut ModelPart, t: &Tune, f: &Frame) {
         let [rx, ry, rz] = rad(t.get(rot));
         arm.set_rotation(rx + f.knead[side].to_radians(), ry, rz);
         arm.visible = of_kind == kind;
+    }
+}
+
+/// Poses the eyes' model as the cat's head stands this frame, the pupils where `e` has them.
+fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame) {
+    eyes.visible = cat.visible;
+    eyes.load_pose(cat.store_pose());
+    let Some(pose) = cat.get_child("head").map(ModelPart::store_pose) else { return };
+    let Some(head) = eyes.get_child_mut("head") else { return };
+    head.load_pose(pose);
+    let grow = [0, 1].map(|i| 1.0 + DILATE[i] * e.dilate + SLIT[i] * e.slit);
+    let size = [PUPIL[0] * grow[0], PUPIL[1] * grow[1]];
+    // How far the pupil's middle may go from the eye's, so the pupil stays inside it.
+    let reach = [(EYE_W - size[0]) * 0.5, (EYE_H - size[1]) * 0.5];
+    for (side, x0) in EYE_X.iter().enumerate() {
+        if let Some(pupil) = head.get_child_mut(PUPILS[side]) {
+            // Eye 0's nose side is +x, eye 1's -x.
+            let x = (e.pupil[0] + if side == 0 { e.cross } else { -e.cross }).clamp(-1.0, 1.0);
+            pupil.set_pos(x0 + EYE_W * 0.5 + x * reach[0], EYE_TOP + EYE_H * 0.5 + e.pupil[1] * reach[1], 0.0);
+            pupil.x_scale = grow[0];
+            pupil.y_scale = grow[1];
+        }
     }
 }
 
@@ -987,7 +1267,22 @@ fn draw_bag(draw: &mut dyn BlockEntityDrawContext, worn: &Worn, tune: &Tune, fra
     }
     if let Some(cat) = lock(worn.kind.model()).as_mut() {
         pose(cat, tune, frame);
+        // The cartoon eyes are a trial on two coats only; the others keep the game's own face.
+        let eyed = worn.kind == Kind::Cat && EYED.contains(&worn.variant.as_str());
+        if !eyed && let Some(head) = cat.get_child_mut("head") {
+            for name in LIDS.into_iter().flatten() {
+                if let Some(lid) = head.get_child_mut(name) {
+                    lid.visible = false;
+                }
+            }
+        }
         draw.model_part(cat, &worn.kind.texture(&worn.variant), 0xFF_FFFF);
+        if eyed
+            && let Some(eyes) = lock(&EYES).as_mut()
+        {
+            pose_eyes(eyes, cat, &frame.eyes);
+            draw.model_part(eyes, EYE_SPRITE, 0xFF_FFFF);
+        }
     }
 }
 
