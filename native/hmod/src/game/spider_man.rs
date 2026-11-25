@@ -2189,6 +2189,17 @@ pub mod spiderman {
         /// How much of the trunk on the web is the measured one (1) rather than the rule «the body stands along the rope»
         /// (0). In the footage the body lies along the flight under the web hand, or is already head down at the release.
         const TRUNK_ON_WEB: f64 = 0.0;
+        /// Free flight with no take in play: the body lies along the flight path (a dive when falling forward, level when
+        /// flying level) instead of the one spread-eagle. Level speed below `GLIDE_SPEED` (blocks a tick) keeps the
+        /// spread-eagle: a slow or near-vertical fall has no path to lie along.
+        const GLIDE_SPEED: f64 = 0.25;
+        /// The trunk follows the path's pitch within these bounds (head down, head up; radians): the measured dive holds
+        /// at 45 to 55 degrees, never vertical.
+        const GLIDE_PITCH: (f64, f64) = (0.96, 0.26);
+        /// How fast the body comes round to the path, a tick: the measured tip-over takes about 0.8 s.
+        const GLIDE_EASE: f32 = 0.14;
+        /// The measured flight's rows the limbs drift between while gliding (its dive, before the flare at the end).
+        const GLIDE_ROWS: (f32, f32) = (9.0, 17.0);
         /// Takes whose release, when it throws the player upward, plays as the launch the footage shows: feet first and
         /// head down while rising, a slow arch onto the belly, then a prone glide.
         const AFTER_LAUNCH: [bool; 9] = [false, false, false, true, false, false, true, false, false];
@@ -4117,6 +4128,25 @@ pub mod spiderman {
                         parts.push(("head", look(m, d)));
                     }
                     (parts, Place::Turn(m), false, 5)
+                } else if anim_on
+                    && matches!(self.phase, Phase::Air | Phase::Fall)
+                    && self.after.is_none()
+                    && (v.x * v.x + v.z * v.z).sqrt() > GLIDE_SPEED
+                {
+                    // Free flight: the trunk along the flight path, limbs from the measured flight, drifting slowly
+                    // between its rows so the pose is never frozen.
+                    let hs = (v.x * v.x + v.z * v.z).sqrt();
+                    let ahead = P::new(v.x / hs, 0.0, v.z / hs);
+                    let th = v.y.atan2(hs).clamp(-GLIDE_PITCH.0, GLIDE_PITCH.1);
+                    let m = plane_turn(ahead, th);
+                    mirror = self.anim_mirror;
+                    let r = GLIDE_ROWS.0 + (GLIDE_ROWS.1 - GLIDE_ROWS.0) * (0.5 + 0.5 * (ticks as f32 * 0.12).sin());
+                    let (i, f) = ((r.floor() as usize).min(anim::AIR_TICKS - 2), r.fract());
+                    let (a, b) = (anim::AIR[i], anim::AIR[i + 1]);
+                    let row: [f32; 8] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f);
+                    let mut parts = limb_parts(&row);
+                    parts.push(("head", look(m, v.norm())));
+                    (parts, Place::Turn(m), false, 6)
                 } else if let Some((si, t0, m0)) = self.after {
                     // After letting go: the same take's flip / dive / spread, the body turned as measured since the release.
                     let take = &anim::SWINGS[si];
@@ -4334,6 +4364,7 @@ pub mod spiderman {
                 // Across a change of kind: an even cross-fade, 1/6 of what is left, then 1/5, … so it starts gently.
                 let fade = if self.seam > 0 { 1.0 / self.seam as f32 } else { 1.0 };
                 let k = if snap { fade } else { EASE.min(fade) };
+                let k = if source == 6 { k.min(GLIDE_EASE) } else { k };
                 self.seam = self.seam.saturating_sub(1);
                 if matches!(source, 1 | 4) {
                     self.anim_mirror = mirror;
