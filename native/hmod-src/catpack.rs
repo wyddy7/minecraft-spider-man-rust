@@ -38,8 +38,12 @@ const EYE_W: f32 = 2.0;
 const EYE_H: f32 = 2.25;
 const EYE_FRONT: f32 = -2.75;
 const FACE: f32 = -2.5;
-/// The pupil's size at rest.
-const PUPIL: [f32; 2] = [1.16, 1.19];
+/// The pupil at rest: a cat's upright slit. Dilating, it widens far more than it grows (to round).
+const PUPIL: [f32; 2] = [0.6, 1.5];
+const DILATE_X: f32 = 1.6;
+const DILATE_Y: f32 = 0.2;
+/// The iris's corners are cut by this much (x, y), so the eye reads round, as the reference's does.
+const ROUND: [f32; 2] = [0.3, 0.35];
 /// The forehead texel of the cat texture the lids are coloured from (the head's front face starts at 5, 5).
 const LID_UV: [f32; 2] = [7.0, 5.0];
 /// Each eye's lids (top, bottom, angry brow, worried brow) and pupil, by name.
@@ -224,7 +228,12 @@ fn eyes() -> ModelPart {
     let mut parts = Vec::new();
     for (x0, pupil) in EYE_X.into_iter().zip(PUPILS) {
         let (x1, y0, y1) = (x0 + EYE_W, EYE_TOP, EYE_TOP + EYE_H);
-        polygons.push(quad(x0, y0, x1, y1, EYE_FRONT, [0.0, 0.0, 4.0 / T[0], 1.0], 0.0));
+        // The iris: a full-height middle and two shorter side strips, its corners cut.
+        let ramp = |ya: f32, yb: f32| [0.0, (ya - y0) / EYE_H, 4.0 / T[0], (yb - y0) / EYE_H];
+        let [cx, cy] = ROUND;
+        polygons.push(quad(x0 + cx, y0, x1 - cx, y1, EYE_FRONT, ramp(y0, y1), 0.0));
+        polygons.push(quad(x0, y0 + cy, x0 + cx, y1 - cy, EYE_FRONT, ramp(y0 + cy, y1 - cy), 0.0));
+        polygons.push(quad(x1 - cx, y0 + cy, x1, y1 - cy, EYE_FRONT, ramp(y0 + cy, y1 - cy), 0.0));
         // The sides, from the iris back into the face: top, bottom, left, right.
         let v = |x: f32, y: f32, z: f32| ModelVertex::new([x, y, z], side[0], side[1]);
         let (zf, zb) = (EYE_FRONT, FACE);
@@ -233,7 +242,8 @@ fn eyes() -> ModelPart {
         polygons.push(ModelPolygon::new([v(x0, y0, zf), v(x0, y0, zb), v(x0, y1, zb), v(x0, y1, zf)], [-1.0, 0.0, 0.0]));
         polygons.push(ModelPolygon::new([v(x1, y0, zb), v(x1, y0, zf), v(x1, y1, zf), v(x1, y1, zb)], [1.0, 0.0, 0.0]));
         let [w, h] = PUPIL.map(|s| s * 0.5);
-        let dot = quad(-w, -h, w, h, EYE_FRONT - 0.01, solid(5.0, 0.0, T), 0.0);
+        // Black above, a dark wine below, as the reference's pupil.
+        let dot = quad(-w, -h, w, h, EYE_FRONT - 0.01, [5.25 / T[0], 0.0, 5.75 / T[0], 2.0 / T[1]], 0.0);
         parts.push((pupil.to_owned(), ModelPart::new(vec![dot], Vec::new(), PartPose::ZERO)));
     }
     let head = ModelPart::new(polygons, parts, PartPose::ZERO);
@@ -1077,7 +1087,8 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame) {
     let Some(pose) = cat.get_child("head").map(ModelPart::store_pose) else { return };
     let Some(head) = eyes.get_child_mut("head") else { return };
     head.load_pose(pose);
-    let size = PUPIL.map(|p| p * (1.0 + e.dilate));
+    let grow = [1.0 + DILATE_X * e.dilate, 1.0 + DILATE_Y * e.dilate];
+    let size = [PUPIL[0] * grow[0], PUPIL[1] * grow[1]];
     // How far the pupil's middle may go from the eye's, so the pupil stays inside it.
     let reach = [(EYE_W - size[0]) * 0.5, (EYE_H - size[1]) * 0.5];
     for (side, x0) in EYE_X.iter().enumerate() {
@@ -1085,8 +1096,8 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame) {
             // Eye 0's nose side is +x, eye 1's -x.
             let x = (e.pupil[0] + if side == 0 { e.cross } else { -e.cross }).clamp(-1.0, 1.0);
             pupil.set_pos(x0 + EYE_W * 0.5 + x * reach[0], EYE_TOP + EYE_H * 0.5 + e.pupil[1] * reach[1], 0.0);
-            pupil.x_scale = 1.0 + e.dilate;
-            pupil.y_scale = 1.0 + e.dilate;
+            pupil.x_scale = grow[0];
+            pupil.y_scale = grow[1];
         }
     }
 }
