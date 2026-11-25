@@ -1252,12 +1252,6 @@ fn look(m: M, d: P) -> [f32; 3] {
     [-(up as f32), turn as f32, 0.0]
 }
 
-/// The file `SPIDEY_TRACE` names, read once.
-fn trace_path() -> Option<&'static str> {
-    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    PATH.get_or_init(|| std::env::var("SPIDEY_TRACE").ok().filter(|p| !p.is_empty())).as_deref()
-}
-
 /// A turn as a matrix: world from model axes (x right, y up, z back).
 type M = [[f64; 3]; 3];
 const IDENTITY: M = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -2525,27 +2519,6 @@ impl Spidey {
             _ => (None, None),
         };
         self.sent = (facing, twist);
-        // `SPIDEY_TRACE=<file>`: one line a tick with what the model was told, to look for jumps in numbers.
-        if let Some(path) = trace_path() {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                let q = mat_quat(if self.rot_live { self.rot } else { euler_mat(self.body, facing.unwrap_or(yaw)) });
-                let web = self.web.as_ref().map(|w| (w.flying, w.held, w.variant, w.mirror));
-                let _ = writeln!(
-                    f,
-                    "{}\t{:?}\t{}\t{}\t{}\t{:?}\t{:.4},{:.4},{:.4},{:.4}\t{}\t{:.3},{:.3},{:.3}",
-                    self.ticks,
-                    self.phase,
-                    source,
-                    snap,
-                    state.on_ground,
-                    web,
-                    q[0], q[1], q[2], q[3],
-                    self.shown.iter().map(|(n, a)| format!("{n}:{:.3}:{:.3}:{:.3}", a[0], a[1], a[2])).collect::<Vec<_>>().join(" "),
-                    v.x, v.y, v.z,
-                );
-            }
-        }
         motion::set_pose(&parts, self.body[0], self.body[1], twist, facing, shift);
     }
 }
