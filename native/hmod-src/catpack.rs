@@ -200,13 +200,18 @@ fn eyes() -> ModelPart {
         let (sx0, sx1) = step_span(side, x0);
         let iris = colour(0, Slot::Iris);
         let polygons = vec![
-            quad(x0, y0, x1, y1, EYE_FRONT + 0.01, colour(0, Slot::Face), 0.0),
+            // A little wider and taller than the eye, so at a slant no edge of the game's own
+            // painted eyes shows round it.
+            quad(x0 - 0.1, y0 - 0.1, x1 + 0.1, y1 + 0.3, EYE_FRONT + 0.01, colour(0, Slot::Face), 0.0),
+            // The iris's two parts, each drawn as up to two faces once cut (`pose_eyes`).
             quad(sx0, y0, sx1, y0 + step, EYE_FRONT, iris, 0.0),
+            quad(sx0, y0, sx1, y0 + step, EYE_FRONT, iris, 0.0),
+            quad(x0, y0 + step, x1, y1, EYE_FRONT, iris, 0.0),
             quad(x0, y0 + step, x1, y1, EYE_FRONT, iris, 0.0),
         ];
         // The pupil's two faces, placed in the eye's frame each frame (`pose_eyes`).
         let z = EYE_FRONT - 0.01;
-        let pupil = vec![quad(0.0, 0.0, 0.0, 0.0, z, colour(0, Slot::Pupil), 0.0), quad(0.0, 0.0, 0.0, 0.0, z, colour(0, Slot::PupilLow), 0.0)];
+        let pupil = vec![quad(0.0, 0.0, 0.0, 0.0, z, colour(0, Slot::Pupil), 0.0); 4];
         let children = vec![("pupil".to_owned(), ModelPart::new(pupil, Vec::new(), PartPose::ZERO))];
         parts.push((name.to_owned(), ModelPart::new(polygons, children, PartPose::ZERO)));
     }
@@ -1192,7 +1197,7 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame, coat: usize) {
         let Some(eye) = head.get_child_mut(EYES_PARTS[side]) else { continue };
         // The coat's colours: the face patch and the iris's two faces.
         let iris = if side == 0 { Slot::Iris } else { Slot::Iris2 };
-        for (polygon, slot) in eye.polygons.iter_mut().zip([Slot::Face, iris, iris]) {
+        for (polygon, slot) in eye.polygons.iter_mut().zip([Slot::Face, iris, iris, iris, iris]) {
             paint(polygon, colour(coat, slot));
         }
         // The lids' lines: the top one comes down (further at the nose when angry, at the outside
@@ -1204,25 +1209,66 @@ fn pose_eyes(eyes: &mut ModelPart, cat: &ModelPart, e: &EyeFrame, coat: usize) {
         let top = |x: f32| at_x0 + (at_x1 - at_x0) * (x - x0) / EYE_W;
         let floor = y1 - e.bottom.clamp(0.0, 1.0) * EYE_H * 0.6;
         let (sx0, sx1) = step_span(side, *x0);
-        let cut = |polygon: &mut ModelPolygon, [ax, ay, bx, by]: [f32; 4]| {
-            let (b, t) = (by.min(floor), |x: f32| ay.max(top(x)));
-            // Right top, left top, left bottom, right bottom; a top never below its bottom.
-            shape(polygon, [[bx, t(bx).min(b)], [ax, t(ax).min(b)], [ax, b], [bx, b]], None);
+        // A rectangle cut along both lids: what is left of it, as two faces.
+        let cut = |faces: &mut [ModelPolygon], rect: [f32; 4]| {
+            let left = clip(clip(corners(rect), |[x, y]| y - top(x)), |[_, y]| floor - y);
+            fan(faces, &left);
         };
-        cut(&mut eye.polygons[1], [sx0, y0, sx1, y0 + STEP]);
-        cut(&mut eye.polygons[2], [*x0, y0 + STEP, x1, y1]);
+        cut(&mut eye.polygons[1..3], [sx0, y0, sx1, y0 + STEP]);
+        cut(&mut eye.polygons[3..5], [*x0, y0 + STEP, x1, y1]);
         if let Some(pupil) = eye.get_child_mut("pupil") {
             // Eye 0's nose side is +x, eye 1's -x.
             let x = (e.pupil[0] + if side == 0 { e.cross } else { -e.cross }).clamp(-1.0, 1.0);
             let (cx, cy) = (x0 + EYE_W * 0.5 + x * reach[0], y0 + EYE_H * 0.5 + e.pupil[1] * reach[1]);
             let (w, h) = (size[0] * 0.5, size[1] * 0.5);
             let split = cy + h * 0.2;
-            let [dark, low] = &mut pupil.polygons[..] else { continue };
-            paint(dark, colour(coat, Slot::Pupil));
-            paint(low, colour(coat, Slot::PupilLow));
-            cut(dark, [cx - w, cy - h, cx + w, split]);
-            cut(low, [cx - w, split, cx + w, cy + h]);
+            for (i, polygon) in pupil.polygons.iter_mut().enumerate() {
+                paint(polygon, colour(coat, if i < 2 { Slot::Pupil } else { Slot::PupilLow }));
+            }
+            cut(&mut pupil.polygons[0..2], [cx - w, cy - h, cx + w, split]);
+            cut(&mut pupil.polygons[2..4], [cx - w, split, cx + w, cy + h]);
         }
+    }
+}
+
+/// A rectangle (left, top, right, bottom) as its corners in a face's order: right top, left top,
+/// left bottom, right bottom.
+fn corners([ax, ay, bx, by]: [f32; 4]) -> Vec<[f32; 2]> {
+    vec![[bx, ay], [ax, ay], [ax, by], [bx, by]]
+}
+
+/// What is left of the polygon `points` where `inside` is not negative (Sutherland–Hodgman):
+/// a straight cut, however it crosses.
+fn clip(points: Vec<[f32; 2]>, inside: impl Fn([f32; 2]) -> f32) -> Vec<[f32; 2]> {
+    let mut out = Vec::with_capacity(points.len() + 1);
+    for (i, &p) in points.iter().enumerate() {
+        let q = points[(i + 1) % points.len()];
+        let (dp, dq) = (inside(p), inside(q));
+        if dp >= 0.0 {
+            out.push(p);
+        }
+        if (dp >= 0.0) != (dq >= 0.0) {
+            let t = dp / (dp - dq);
+            out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+        }
+    }
+    out
+}
+
+/// Lays a convex polygon of up to six corners on two faces as a fan from its first corner; an
+/// empty one, or a face not needed, collapses to a point.
+fn fan(faces: &mut [ModelPolygon], points: &[[f32; 2]]) {
+    let at = |i: usize| points[i.min(points.len().saturating_sub(1))];
+    for (k, face) in faces.iter_mut().enumerate() {
+        let first = k * 2 + 1;
+        // A sliver (a shut lid leaves a line of no height) is not drawn: it would show as a hair.
+        let area = (1..points.len().max(2) - 1).map(|i| {
+            let ([ax, ay], [bx, by], [cx, cy]) = (points[0], points[i], points[i + 1]);
+            ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)).abs()
+        });
+        let shown = points.len() >= 3 && first + 1 < points.len() && area.sum::<f32>() > 0.004;
+        let corners = if shown { [at(0), at(first), at(first + 1), at(first + 2)] } else { [[0.0; 2]; 4] };
+        shape(face, corners, None);
     }
 }
 
